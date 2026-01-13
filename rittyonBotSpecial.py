@@ -44,7 +44,7 @@ async def send_daily_message():
         return
 
     now = datetime.datetime.now(JST)
-    if now.hour == 19 and now.minute == 55:
+    if now.hour == 19 and now.minute == 00:
         channel = bot.get_channel(target_channel_id)
         if channel:
             await channel.send(
