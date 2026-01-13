@@ -5,6 +5,21 @@ import os
 import datetime
 import pytz
 from dotenv import load_dotenv
+from flask import Flask
+from threading import Thread
+
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "I'm alive!"
+
+def run_flask():
+    app.run(host='0.0.0.0', port=10000)
+
+def keep_alive():
+    t = Thread(target=run_flask)
+    t.start()
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -55,5 +70,5 @@ async def send_daily_message():
                 "観戦👀\n"
                 "参加不可❌"
             )
-
+keep_alive()
 bot.run(TOKEN)
