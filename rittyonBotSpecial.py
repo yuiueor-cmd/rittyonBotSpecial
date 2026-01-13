@@ -4,7 +4,6 @@ from discord import app_commands
 import os
 import datetime
 import pytz
-from dotenv import load_dotenv
 from flask import Flask
 from threading import Thread
 
@@ -21,8 +20,8 @@ def keep_alive():
     t = Thread(target=run_flask)
     t.start()
 
-load_dotenv()
-TOKEN = os.getenv("DISCORD_TOKEN")
+TOKEN = os.environ["DISCORD_TOKEN"]
+
 
 intents = discord.Intents.default()
 intents.guilds = True
