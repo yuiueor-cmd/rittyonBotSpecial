@@ -6,7 +6,7 @@ import datetime
 import pytz
 from flask import Flask
 from threading import Thread
-import google.genai as genai
+import google.generativeai as genai
 import random
 
 MODES = ["boke", "tsundere"]
