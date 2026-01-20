@@ -101,15 +101,16 @@ async def reset(interaction: discord.Interaction):
 # /ai コマンド
 import asyncio
 
-# 高速モデル（gemini-1.5-flash）
-model = genai.GenerativeModel("gemini-1.5-flash")
+
 
 @bot.tree.command(name="ai", description="AIと会話します")
 async def ai(interaction: discord.Interaction, prompt: str):
-    await interaction.response.defer()
+
+    # ★ これを最初に絶対に実行（3秒以内保証）
+    await interaction.response.defer(thinking=True)
+
     user_id = interaction.user.id
 
-    # セッションがなければ作成
     if user_id not in user_sessions:
         user_sessions[user_id] = {
             "history": [],
@@ -120,21 +121,20 @@ async def ai(interaction: discord.Interaction, prompt: str):
     session = user_sessions[user_id]
     chat = session["chat"]
 
-    # personality を最初のメッセージとして送る（1回だけ）
+    # personality は defer の後に送る
     if not session["history"]:
         await asyncio.get_event_loop().run_in_executor(
             None,
             lambda: chat.send_message(PERSONALITY[session["mode"]])
         )
 
-    # ★ 非同期でメッセージ送信（高速）
+    # Gemini へ送信
     loop = asyncio.get_event_loop()
     response = await loop.run_in_executor(
         None,
         lambda: chat.send_message(prompt)
     )
 
-    # 履歴を短くして軽量化（最新4ターンだけ）
     session["history"].append(prompt)
     session["history"] = session["history"][-4:]
 
