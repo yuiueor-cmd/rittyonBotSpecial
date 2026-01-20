@@ -76,7 +76,11 @@ async def check_genai(interaction: discord.Interaction):
         out.append(f"genai version: {getattr(genai, '__version__', 'unknown')}")
         try:
             models = genai.list_models()
-            names = [m.get("name") for m in models]
+            names = []
+            for m in models:
+                # 安全に属性を取得
+                name = getattr(m, "name", None) or getattr(m, "model", None) or str(m)
+                names.append(name)
             out.append("available models: " + ", ".join(names))
         except Exception as e:
             out.append(f"list_models error: {type(e).__name__} {e}")
@@ -84,12 +88,7 @@ async def check_genai(interaction: discord.Interaction):
 
     loop = asyncio.get_event_loop()
     result = await loop.run_in_executor(None, sync_check)
-    # 長い場合は分割して送る
-    if len(result) <= 1900:
-        await interaction.followup.send(result, ephemeral=True)
-    else:
-        for chunk_start in range(0, len(result), 1900):
-            await interaction.followup.send(result[chunk_start:chunk_start+1900], ephemeral=True)
+    await interaction.followup.send(result, ephemeral=True)
 # -----------------------------
 # ここから AI 会話機能
 # -----------------------------
