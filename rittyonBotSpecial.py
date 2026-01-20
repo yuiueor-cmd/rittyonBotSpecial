@@ -50,17 +50,14 @@ PERSONALITY = {
 # 日本時間
 JST = pytz.timezone("Asia/Tokyo")
 
-GUILD_ID = 1410601194245849173
-
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user}")
-    keep_alive()  # ← ここだけでOK
+    keep_alive()
     send_daily_message.start()
     try:
-        guild = discord.Object(id=GUILD_ID)
-        synced = await bot.tree.sync(guild=guild)
-        print(f"Synced {len(synced)} guild commands")
+        synced = await bot.tree.sync()  # ← グローバル同期に変更
+        print(f"Synced {len(synced)} global commands")
     except Exception as e:
         print(e)
 
