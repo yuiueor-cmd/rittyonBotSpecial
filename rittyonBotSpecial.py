@@ -141,7 +141,6 @@ async def ai(interaction: discord.Interaction, prompt: str):
 
     user_id = interaction.user.id
 
-    # セッションがなければ作成
     if user_id not in user_sessions:
         user_sessions[user_id] = {
             "mode": "boke",
@@ -151,10 +150,9 @@ async def ai(interaction: discord.Interaction, prompt: str):
     session = user_sessions[user_id]
     mode = session["mode"]
 
-    # 毎回新しいチャットセッションを作る（安定化）
     chat = model.start_chat(history=[])
 
-    # personality を先に送る
+    # personality（1回目）
     try:
         await asyncio.get_event_loop().run_in_executor(
             None,
@@ -165,15 +163,17 @@ async def ai(interaction: discord.Interaction, prompt: str):
         )
     except Exception as e:
         print("personality send error:", e)
-        traceback.print_exc()
         await interaction.followup.send("⚠️ AI の初期化に失敗しました。時間をおいて再試行してください。")
         return
 
-    # personality 送信（2回目）→ 429対策
+    # personality（2回目）← ここがクラッシュしてた
     try:
-        response = chat.send_message(
-            PERSONALITY[mode],
-            request_options={"timeout": 60}
+        await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: chat.send_message(
+                PERSONALITY[mode],
+                request_options={"timeout": 60}
+            )
         )
     except Exception as e:
         print("quota error:", e)
@@ -182,8 +182,7 @@ async def ai(interaction: discord.Interaction, prompt: str):
 
     # prompt を送る
     try:
-        loop = asyncio.get_event_loop()
-        response = await loop.run_in_executor(
+        response = await asyncio.get_event_loop().run_in_executor(
             None,
             lambda: chat.send_message(
                 prompt,
@@ -207,7 +206,6 @@ async def ai(interaction: discord.Interaction, prompt: str):
     if not text:
         text = str(response)
 
-    # ログ形式で返す
     reply = (
         f"👤 **{interaction.user.display_name}**: {prompt}\n"
         f"🤖 **AI（{mode}）**: {text}"
