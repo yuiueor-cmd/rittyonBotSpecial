@@ -98,6 +98,8 @@ async def reset(interaction: discord.Interaction):
 # /ai コマンド
 import asyncio
 
+import asyncio
+
 @bot.tree.command(name="ai", description="AIと会話します")
 async def ai(interaction: discord.Interaction, prompt: str):
     await interaction.response.defer()
@@ -108,26 +110,34 @@ async def ai(interaction: discord.Interaction, prompt: str):
 
     session = user_sessions[user_id]
 
-    # Gemini モデルは外で1回だけ作るのが理想だが、
-    # とりあえず今の構造に合わせてここで使う
-
-
+    # メッセージを新仕様に変換
     messages = [
-        {"role": "system", "content": PERSONALITY[session["mode"]]}
+        {
+            "role": "user",
+            "parts": [{"text": PERSONALITY[session["mode"]]}]
+        }
     ] + session["history"] + [
-        {"role": "user", "content": prompt}
+        {
+            "role": "user",
+            "parts": [{"text": prompt}]
+        }
     ]
 
-    # ★ここが非同期化のポイント
     loop = asyncio.get_event_loop()
     response = await loop.run_in_executor(
         None,
         lambda: model.generate_content(messages)
     )
 
-    # 履歴に追加
-    session["history"].append({"role": "user", "content": prompt})
-    session["history"].append({"role": "assistant", "content": response.text})
+    # 履歴に追加（新形式）
+    session["history"].append({
+        "role": "user",
+        "parts": [{"text": prompt}]
+    })
+    session["history"].append({
+        "role": "assistant",
+        "parts": [{"text": response.text}]
+    })
 
     await interaction.followup.send(response.text)
 
