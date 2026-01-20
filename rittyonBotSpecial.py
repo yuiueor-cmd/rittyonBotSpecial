@@ -62,7 +62,34 @@ async def on_ready():
         print(e)
 
 
+import asyncio
+from discord import app_commands
 
+@bot.tree.command(name="check_genai", description="genai SDK と利用可能モデルを確認します（管理者用）")
+@app_commands.checks.has_permissions(administrator=True)
+async def check_genai(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True, thinking=True)
+
+    def sync_check():
+        import google.generativeai as genai
+        out = []
+        out.append(f"genai version: {getattr(genai, '__version__', 'unknown')}")
+        try:
+            models = genai.list_models()
+            names = [m.get("name") for m in models]
+            out.append("available models: " + ", ".join(names))
+        except Exception as e:
+            out.append(f"list_models error: {type(e).__name__} {e}")
+        return "\n".join(out)
+
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(None, sync_check)
+    # 長い場合は分割して送る
+    if len(result) <= 1900:
+        await interaction.followup.send(result, ephemeral=True)
+    else:
+        for chunk_start in range(0, len(result), 1900):
+            await interaction.followup.send(result[chunk_start:chunk_start+1900], ephemeral=True)
 # -----------------------------
 # ここから AI 会話機能
 # -----------------------------
