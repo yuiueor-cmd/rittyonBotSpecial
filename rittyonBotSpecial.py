@@ -9,6 +9,7 @@ from threading import Thread
 import google.generativeai as genai
 import random
 import asyncio
+import traceback
 
 
 app = Flask(__name__)
@@ -164,6 +165,7 @@ async def ai(interaction: discord.Interaction, prompt: str):
         )
     except Exception as e:
         print("personality send error:", e)
+        traceback.print_exc()
         await interaction.followup.send("AI の初期化に失敗しました。時間をおいて再試行してください。")
         return
 
