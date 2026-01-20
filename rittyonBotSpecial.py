@@ -72,14 +72,17 @@ async def on_ready():
 async def mode(interaction: discord.Interaction):
     user_id = interaction.user.id
 
-    # ランダムでモードを決定
     selected = random.choice(["boke", "tsundere"])
 
-    # セッションがなければ作成
     if user_id not in user_sessions:
-        user_sessions[user_id] = {"history": [], "mode": selected}
+        user_sessions[user_id] = {
+            "history": [],
+            "mode": selected,
+            "chat": model.start_chat(history=[])
+        }
     else:
         user_sessions[user_id]["mode"] = selected
+        user_sessions[user_id]["chat"] = model.start_chat(history=[])  # ← これ追加！
 
     await interaction.response.send_message(
         f"あなたのAIモードは **{selected}** に決定したよ！"
@@ -98,46 +101,42 @@ async def reset(interaction: discord.Interaction):
 # /ai コマンド
 import asyncio
 
-import asyncio
+# 高速モデル（gemini-1.5-flash）
+model = genai.GenerativeModel("gemini-1.5-flash")
 
 @bot.tree.command(name="ai", description="AIと会話します")
 async def ai(interaction: discord.Interaction, prompt: str):
     await interaction.response.defer()
     user_id = interaction.user.id
 
+    # セッションがなければ作成
     if user_id not in user_sessions:
-        user_sessions[user_id] = {"history": [], "mode": "boke"}
+        user_sessions[user_id] = {
+            "history": [],
+            "mode": "boke",
+            "chat": model.start_chat(history=[])
+        }
 
     session = user_sessions[user_id]
+    chat = session["chat"]
 
-    # メッセージを新仕様に変換
-    messages = [
-        {
-            "role": "user",
-            "parts": [{"text": PERSONALITY[session["mode"]]}]
-        }
-    ] + session["history"] + [
-        {
-            "role": "user",
-            "parts": [{"text": prompt}]
-        }
-    ]
+    # personality を最初のメッセージとして送る（1回だけ）
+    if not session["history"]:
+        await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: chat.send_message(PERSONALITY[session["mode"]])
+        )
 
+    # ★ 非同期でメッセージ送信（高速）
     loop = asyncio.get_event_loop()
     response = await loop.run_in_executor(
         None,
-        lambda: model.generate_content(messages)
+        lambda: chat.send_message(prompt)
     )
 
-    # 履歴に追加（新形式）
-    session["history"].append({
-        "role": "user",
-        "parts": [{"text": prompt}]
-    })
-    session["history"].append({
-        "role": "assistant",
-        "parts": [{"text": response.text}]
-    })
+    # 履歴を短くして軽量化（最新4ターンだけ）
+    session["history"].append(prompt)
+    session["history"] = session["history"][-4:]
 
     await interaction.followup.send(response.text)
 
