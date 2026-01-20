@@ -166,7 +166,18 @@ async def ai(interaction: discord.Interaction, prompt: str):
     except Exception as e:
         print("personality send error:", e)
         traceback.print_exc()
-        await interaction.followup.send("AI の初期化に失敗しました。時間をおいて再試行してください。")
+        await interaction.followup.send("⚠️ AI の初期化に失敗しました。時間をおいて再試行してください。")
+        return
+
+    # personality 送信（2回目）→ 429対策
+    try:
+        response = chat.send_message(
+            PERSONALITY[mode],
+            request_options={"timeout": 60}
+        )
+    except Exception as e:
+        print("quota error:", e)
+        await interaction.followup.send("⚠️ 現在AIの利用上限に達しています。しばらくしてからもう一度試してください。")
         return
 
     # prompt を送る
@@ -181,7 +192,7 @@ async def ai(interaction: discord.Interaction, prompt: str):
         )
     except Exception as e:
         print("chat send error:", e)
-        await interaction.followup.send("AI 応答の取得に失敗しました。管理者にログを確認してください。")
+        await interaction.followup.send("⚠️ AI 応答の取得に失敗しました。時間をおいて再試行してください。")
         return
 
     # テキスト抽出
