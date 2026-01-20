@@ -46,7 +46,7 @@ user_sessions = {}
 
 # モデル初期化（ここで一度だけ初期化）
 try:
-    model = genai.GenerativeModel("models/gemini-2.5-flash")  # 速いモデル
+    model = genai.GenerativeModel("gemini-2.5-flash-lite")
 except Exception as e:
     print("モデル初期化エラー, フォールバックします:", e)
     model = genai.GenerativeModel("models/chat-bison-001")  # フォールバック
