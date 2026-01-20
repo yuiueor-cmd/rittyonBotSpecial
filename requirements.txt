@@ -2,4 +2,4 @@ discord.py
 python-dotenv
 pytz
 Flask
-google-generativeai
+google-generativeai>=0.5.0
