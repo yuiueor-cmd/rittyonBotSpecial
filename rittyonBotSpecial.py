@@ -40,7 +40,7 @@ target_channel_id = None
 
 # AI 会話セッション保存
 user_sessions = {}
-
+model = genai.GenerativeModel("gemini-pro")
 # 性格プロンプト
 PERSONALITY = {
     "boke": "あなたは明るくてボケ担当のAIです。ユーザーの発言に対して面白くズレた返答をしてください。",
@@ -96,6 +96,8 @@ async def reset(interaction: discord.Interaction):
     await interaction.response.send_message("会話をリセットしたよ！")
 
 # /ai コマンド
+import asyncio
+
 @bot.tree.command(name="ai", description="AIと会話します")
 async def ai(interaction: discord.Interaction, prompt: str):
     await interaction.response.defer()
@@ -106,8 +108,9 @@ async def ai(interaction: discord.Interaction, prompt: str):
 
     session = user_sessions[user_id]
 
-    # Gemini のチャットセッションを使う
-    model = genai.GenerativeModel("gemini-pro")
+    # Gemini モデルは外で1回だけ作るのが理想だが、
+    # とりあえず今の構造に合わせてここで使う
+
 
     messages = [
         {"role": "system", "content": PERSONALITY[session["mode"]]}
@@ -115,7 +118,12 @@ async def ai(interaction: discord.Interaction, prompt: str):
         {"role": "user", "content": prompt}
     ]
 
-    response = model.generate_content(messages)
+    # ★ここが非同期化のポイント
+    loop = asyncio.get_event_loop()
+    response = await loop.run_in_executor(
+        None,
+        lambda: model.generate_content(messages)
+    )
 
     # 履歴に追加
     session["history"].append({"role": "user", "content": prompt})
