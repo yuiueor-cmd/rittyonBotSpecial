@@ -8,16 +8,18 @@ from flask import Flask
 from threading import Thread
 import google.generativeai as genai
 import random
+import asyncio
 
 MODES = ["boke", "tsundere"]
 app = Flask(__name__)
 
 def run_flask():
     port = int(os.environ.get("PORT", 5000))
-    app.run(host='0.0.0.0', port=port)
+    # use_reloader=False avoids double-start in some hosts
+    app.run(host='0.0.0.0', port=port, use_reloader=False)
 
 def keep_alive():
-    t = Thread(target=run_flask)
+    t = Thread(target=run_flask, daemon=True)
     t.start()
 
 @app.route('/', methods=['GET', 'HEAD'])
@@ -40,7 +42,14 @@ target_channel_id = None
 
 # AI 会話セッション保存
 user_sessions = {}
-model = genai.GenerativeModel("gemini-pro")
+
+# モデル初期化（ここで一度だけ初期化）
+try:
+    model = genai.GenerativeModel("models/gemini-2.5-flash")  # 速いモデル
+except Exception as e:
+    print("モデル初期化エラー, フォールバックします:", e)
+    model = genai.GenerativeModel("models/chat-bison-001")  # フォールバック
+
 # 性格プロンプト
 PERSONALITY = {
     "boke": "あなたは明るくてボケ担当のAIです。ユーザーの発言に対して面白くズレた返答をしてください。",
@@ -56,15 +65,12 @@ async def on_ready():
     keep_alive()
     send_daily_message.start()
     try:
-        synced = await bot.tree.sync()  # ← グローバル同期に変更
+        synced = await bot.tree.sync()
         print(f"Synced {len(synced)} global commands")
     except Exception as e:
         print(e)
 
-
-import asyncio
-from discord import app_commands
-
+# 管理者用チェックコマンド
 @bot.tree.command(name="check_genai", description="genai SDK と利用可能モデルを確認します（管理者用）")
 @app_commands.checks.has_permissions(administrator=True)
 async def check_genai(interaction: discord.Interaction):
@@ -78,7 +84,6 @@ async def check_genai(interaction: discord.Interaction):
             models = genai.list_models()
             names = []
             for m in models:
-                # 安全に属性を取得
                 name = getattr(m, "name", None) or getattr(m, "model", None) or str(m)
                 names.append(name)
             out.append("available models: " + ", ".join(names))
@@ -88,7 +93,10 @@ async def check_genai(interaction: discord.Interaction):
 
     loop = asyncio.get_event_loop()
     result = await loop.run_in_executor(None, sync_check)
-    await interaction.followup.send(result, ephemeral=True)
+    # 長い場合は分割して送る
+    for i in range(0, len(result), 1900):
+        await interaction.followup.send(result[i:i+1900], ephemeral=True)
+
 # -----------------------------
 # ここから AI 会話機能
 # -----------------------------
@@ -97,8 +105,7 @@ async def check_genai(interaction: discord.Interaction):
 @bot.tree.command(name="mode", description="AIの性格をランダムで決めます")
 async def mode(interaction: discord.Interaction):
     user_id = interaction.user.id
-
-    selected = random.choice(["boke", "tsundere"])
+    selected = random.choice(MODES)
 
     if user_id not in user_sessions:
         user_sessions[user_id] = {
@@ -108,35 +115,24 @@ async def mode(interaction: discord.Interaction):
         }
     else:
         user_sessions[user_id]["mode"] = selected
-        user_sessions[user_id]["chat"] = model.start_chat(history=[])  # ← これ追加！
+        user_sessions[user_id]["chat"] = model.start_chat(history=[])
 
-    await interaction.response.send_message(
-        f"あなたのAIモードは **{selected}** に決定したよ！"
-    )
+    await interaction.response.send_message(f"あなたのAIモードは **{selected}** に決定したよ！")
 
 # /reset コマンド
 @bot.tree.command(name="reset", description="AIとの会話をリセットします")
 async def reset(interaction: discord.Interaction):
     user_id = interaction.user.id
-
     if user_id in user_sessions:
         user_sessions[user_id]["history"] = []
-
     await interaction.response.send_message("会話をリセットしたよ！")
 
 # /ai コマンド
-import asyncio
-
-
-
 @bot.tree.command(name="ai", description="AIと会話します")
 async def ai(interaction: discord.Interaction, prompt: str):
-
-    # ★ これを最初に絶対に実行（3秒以内保証）
     await interaction.response.defer(thinking=True)
 
     user_id = interaction.user.id
-
     if user_id not in user_sessions:
         user_sessions[user_id] = {
             "history": [],
@@ -147,24 +143,40 @@ async def ai(interaction: discord.Interaction, prompt: str):
     session = user_sessions[user_id]
     chat = session["chat"]
 
-    # personality は defer の後に送る
-    if not session["history"]:
-        await asyncio.get_event_loop().run_in_executor(
-            None,
-            lambda: chat.send_message(PERSONALITY[session["mode"]])
-        )
+    try:
+        if not session["history"]:
+            await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: chat.send_message(PERSONALITY[session["mode"]])
+            )
+    except Exception as e:
+        print("personality send error:", e)
+        await interaction.followup.send("AI に接続できませんでした。後で再試行してください。")
+        return
 
-    # Gemini へ送信
-    loop = asyncio.get_event_loop()
-    response = await loop.run_in_executor(
-        None,
-        lambda: chat.send_message(prompt)
-    )
+    try:
+        loop = asyncio.get_event_loop()
+        response = await loop.run_in_executor(None, lambda: chat.send_message(prompt))
+    except Exception as e:
+        print("chat send error:", e)
+        await interaction.followup.send("AI 応答の取得に失敗しました。管理者にログを確認してください。")
+        return
+
+    text = getattr(response, "text", None)
+    if not text:
+        try:
+            candidates = getattr(response, "candidates", None)
+            if candidates and len(candidates) > 0:
+                text = getattr(candidates[0], "content", None) or str(candidates[0])
+        except Exception:
+            text = None
+    if not text:
+        text = str(response)
 
     session["history"].append(prompt)
     session["history"] = session["history"][-4:]
 
-    await interaction.followup.send(response.text)
+    await interaction.followup.send(text)
 
 # -----------------------------
 # ここまで AI 会話機能
@@ -196,6 +208,5 @@ async def send_daily_message():
                 "観戦👀\n"
                 "参加不可❌"
             )
-
 
 bot.run(TOKEN)
