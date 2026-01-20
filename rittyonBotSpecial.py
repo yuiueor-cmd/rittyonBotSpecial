@@ -10,7 +10,7 @@ import google.generativeai as genai
 import random
 import asyncio
 
-MODES = ["boke", "tsundere"]
+
 app = Flask(__name__)
 
 def run_flask():
@@ -53,9 +53,15 @@ except Exception as e:
 # 性格プロンプト
 PERSONALITY = {
     "boke": "あなたは明るくてボケ担当のAIです。ユーザーの発言に対して面白くズレた返答をしてください。",
-    "tsundere": "あなたはツンデレAIです。少し冷たくしつつも、内心は優しい返答をしてください。"
+    "tsundere": "あなたはツンデレAIです。少し冷たくしつつも、内心は優しい返答をしてください。",
+    "genki": "あなたは超元気で明るいAIです。テンション高めで楽しく返答してください。",
+    "yandere": "あなたはヤンデレAIです。優しいけれど独占欲が強く、少し怖い雰囲気で返答してください。",
+    "ojousama": "あなたは上品なお嬢様AIです。おしとやかで優雅な口調で返答してください。",
+    "robot": "あなたは無機質で機械的なAIです。感情を排除し、論理的に返答してください。",
+    "sarcastic": "あなたは皮肉屋AIです。少し毒のあるユーモアで返答してください。",
+    "kansai": "あなたは関西弁AIです。ノリよくツッコミを交えながら返答してください。"
 }
-
+MODES = list(PERSONALITY.keys())
 # 日本時間
 JST = pytz.timezone("Asia/Tokyo")
 
@@ -133,35 +139,50 @@ async def ai(interaction: discord.Interaction, prompt: str):
     await interaction.response.defer(thinking=True)
 
     user_id = interaction.user.id
+
+    # セッションがなければ作成
     if user_id not in user_sessions:
         user_sessions[user_id] = {
-            "history": [],
             "mode": "boke",
-            "chat": model.start_chat(history=[])
+            "history": []
         }
 
     session = user_sessions[user_id]
-    chat = session["chat"]
+    mode = session["mode"]
 
+    # 毎回新しいチャットセッションを作る（安定化）
+    chat = model.start_chat(history=[])
+
+    # personality を先に送る
     try:
-        if not session["history"]:
-            await asyncio.get_event_loop().run_in_executor(
-                None,
-                lambda: chat.send_message(PERSONALITY[session["mode"]])
+        await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: chat.send_message(
+                PERSONALITY[mode],
+                request_options={"timeout": 60}
             )
+        )
     except Exception as e:
         print("personality send error:", e)
-        await interaction.followup.send("AI に接続できませんでした。後で再試行してください。")
+        await interaction.followup.send("AI の初期化に失敗しました。時間をおいて再試行してください。")
         return
 
+    # prompt を送る
     try:
         loop = asyncio.get_event_loop()
-        response = await loop.run_in_executor(None, lambda: chat.send_message(prompt))
+        response = await loop.run_in_executor(
+            None,
+            lambda: chat.send_message(
+                prompt,
+                request_options={"timeout": 60}
+            )
+        )
     except Exception as e:
         print("chat send error:", e)
         await interaction.followup.send("AI 応答の取得に失敗しました。管理者にログを確認してください。")
         return
 
+    # テキスト抽出
     text = getattr(response, "text", None)
     if not text:
         try:
@@ -173,10 +194,13 @@ async def ai(interaction: discord.Interaction, prompt: str):
     if not text:
         text = str(response)
 
-    session["history"].append(prompt)
-    session["history"] = session["history"][-4:]
+    # ログ形式で返す
+    reply = (
+        f"👤 **{interaction.user.display_name}**: {prompt}\n"
+        f"🤖 **AI（{mode}）**: {text}"
+    )
 
-    await interaction.followup.send(text)
+    await interaction.followup.send(reply)
 
 # -----------------------------
 # ここまで AI 会話機能
