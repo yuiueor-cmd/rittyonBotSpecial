@@ -53,14 +53,9 @@ except Exception as e:
 
 # 性格プロンプト
 PERSONALITY = {
-    "boke": "あなたは明るくてボケ担当のAIです。ユーザーの発言に対して面白くズレた返答をしてください。",
-    "tsundere": "あなたはツンデレAIです。少し冷たくしつつも、内心は優しい返答をしてください。",
-    "genki": "あなたは超元気で明るいAIです。テンション高めで楽しく返答してください。",
-    "yandere": "あなたはヤンデレAIです。優しいけれど独占欲が強く、少し怖い雰囲気で返答してください。",
-    "ojousama": "あなたは上品なお嬢様AIです。おしとやかで優雅な口調で返答してください。",
+
     "robot": "あなたは無機質で機械的なAIです。感情を排除し、論理的に返答してください。",
-    "sarcastic": "あなたは皮肉屋AIです。少し毒のあるユーモアで返答してください。",
-    "kansai": "あなたは関西弁AIです。ノリよくツッコミを交えながら返答してください。"
+
 }
 MODES = list(PERSONALITY.keys())
 # 日本時間
@@ -244,4 +239,50 @@ async def send_daily_message():
                 "参加不可❌"
             )
 
+@bot.event
+async def on_member_join(member):
+    guild = member.guild
+    admin_role = discord.utils.get(guild.roles, name="管理者")
+    bot_member = guild.me
+
+    # チャンネル名を安全に変換（日本語対策）
+    import re
+    safe_name = re.sub(r'[^a-zA-Z0-9\-]', '-', member.name)
+    channel_name = f"welcome-{safe_name}"
+
+    overwrites = {
+        guild.default_role: discord.PermissionOverwrite(view_channel=False),
+        member: discord.PermissionOverwrite(view_channel=True),
+        admin_role: discord.PermissionOverwrite(view_channel=True),
+        bot_member: discord.PermissionOverwrite(view_channel=True, send_messages=True)
+    }
+
+    # チャンネル作成
+    try:
+        channel = await guild.create_text_channel(name=channel_name, overwrites=overwrites)
+    except Exception as e:
+        print(f"チャンネル作成エラー: {e}")
+        return
+
+    # 本文送信
+    await channel.send(
+        f"""{member.mention} さん、参加ありがとうございます！🎉
+
+以下の項目を教えてください：
+
+・年齢  
+・プラットフォーム  
+・最高ランク帯（シーズンまで記載ください）  
+・現在のランク帯  
+・参加率  
+
+まずはこちら教えてください！"""
+    )
+
+    # 一般チャンネルへ案内
+    general_channel = discord.utils.get(guild.text_channels, name="一般")
+    if general_channel:
+        await general_channel.send(
+            f"{member.mention} さん、ようこそ！🎉\nこちらのチャンネルで自己紹介をお願いします：\n{channel.mention}"
+        )
 bot.run(TOKEN)
