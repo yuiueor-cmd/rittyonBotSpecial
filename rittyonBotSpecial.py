@@ -205,19 +205,40 @@ async def ai(interaction: discord.Interaction, prompt: str):
         f"👤 **{interaction.user.display_name}**: {prompt}\n"
         f"🤖 **AI（{mode}）**: {text}"
     )
+    # 2000文字制限対策：長文は分割して送信
+    MAX_LEN = 2000
 
+    if len(reply) <= MAX_LEN:
+        await interaction.followup.send(reply)
+    else:
+        # 分割して複数メッセージで送信
+        for i in range(0, len(reply), MAX_LEN):
+            await interaction.followup.send(reply[i:i+MAX_LEN])
     await interaction.followup.send(reply)
 
 # -----------------------------
 # ここまで AI 会話機能
 # -----------------------------
-
+welcome_enabled = True
 # スラッシュコマンド：送信先チャンネルを設定
 @bot.tree.command(name="setchannel", description="毎日19時に送信するチャンネルを設定します")
 async def setchannel(interaction: discord.Interaction, channel: discord.TextChannel):
     global target_channel_id
     target_channel_id = channel.id
     await interaction.response.send_message(f"送信先チャンネルを **{channel.mention}** に設定しました。")
+@bot.tree.command(name="welcome_on", description="参加者自動チャンネル作成を有効化します（管理者専用）")
+@app_commands.checks.has_permissions(administrator=True)
+async def welcome_on(interaction: discord.Interaction):
+    global welcome_enabled
+    welcome_enabled = True
+    await interaction.response.send_message("✅ 自動ウェルカムチャンネル作成を **有効化** しました。", ephemeral=True)
+
+@bot.tree.command(name="welcome_off", description="参加者自動チャンネル作成を無効化します（管理者専用）")
+@app_commands.checks.has_permissions(administrator=True)
+async def welcome_off(interaction: discord.Interaction):
+    global welcome_enabled
+    welcome_enabled = False
+    await interaction.response.send_message("⛔ 自動ウェルカムチャンネル作成を **無効化** しました。", ephemeral=True)
 
 # 毎日19時にメッセージ送信
 @tasks.loop(minutes=1)
