@@ -241,11 +241,14 @@ async def send_daily_message():
 
 @bot.event
 async def on_member_join(member):
+    global welcome_enabled
+    if not welcome_enabled:
+        return
+
     guild = member.guild
     admin_role = discord.utils.get(guild.roles, name="管理者")
     bot_member = guild.me
 
-    # チャンネル名を安全に変換（日本語対策）
     import re
     safe_name = re.sub(r'[^a-zA-Z0-9\-]', '-', member.name)
     channel_name = f"welcome-{safe_name}"
@@ -257,14 +260,12 @@ async def on_member_join(member):
         bot_member: discord.PermissionOverwrite(view_channel=True, send_messages=True)
     }
 
-    # チャンネル作成
     try:
         channel = await guild.create_text_channel(name=channel_name, overwrites=overwrites)
     except Exception as e:
         print(f"チャンネル作成エラー: {e}")
         return
 
-    # 本文送信
     await channel.send(
         f"""{member.mention} さん、参加ありがとうございます！🎉
 
@@ -279,7 +280,6 @@ async def on_member_join(member):
 まずはこちら教えてください！"""
     )
 
-    # 一般チャンネルへ案内
     general_channel = discord.utils.get(guild.text_channels, name="一般")
     if general_channel:
         await general_channel.send(
