@@ -6,11 +6,10 @@ import datetime
 import pytz
 from flask import Flask
 from threading import Thread
-import google.generativeai as genai
 import random
 import asyncio
 import traceback
-import re  # ★ 追加：extract_seasons で使う
+import re
 
 app = Flask(__name__)
 
@@ -18,30 +17,19 @@ app = Flask(__name__)
 apply_sessions = {}
 
 def extract_seasons(text):
-    # 全角 → 半角
     z2h = str.maketrans('０１２３４５６７８９', '0123456789')
     text = text.translate(z2h)
-
-    # 数字を全部抽出
     nums = re.findall(r'\d+', text)
     return [int(n) for n in nums]
 
 def check_master_seasons(seasons):
-    # 17だけ → OK
     if seasons == [17]:
         return True
-
-    # 17を含む & 2つまで → OK
     if 17 in seasons and len(seasons) == 2:
         return True
-
-    # 1つだけ → OK
     if len(seasons) == 1:
         return True
-
-    # それ以外は NG
     return False
-
 
 def run_flask():
     port = int(os.environ.get("PORT", 5000))
@@ -56,9 +44,6 @@ def home():
     return "I'm alive!", 200
 
 TOKEN = os.environ["DISCORD_TOKEN"]
-GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
-
-genai.configure(api_key=GEMINI_API_KEY)
 
 intents = discord.Intents.default()
 intents.guilds = True
@@ -66,27 +51,8 @@ intents.members = True
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# 保存用
 target_channel_id = None
-
-# AI 会話セッション保存
-user_sessions = {}
-
-# モデル初期化（ここで一度だけ初期化）
-try:
-    model = genai.GenerativeModel("gemini-2.5-flash-lite")
-except Exception as e:
-    print("モデル初期化エラー, フォールバックします:", e)
-    model = genai.GenerativeModel("models/chat-bison-001")  # フォールバック
-
-# 性格プロンプト
-PERSONALITY = {
-    "robot": "あなたは無機質で機械的なAIです。感情を排除し、論理的に返答してください。",
-}
-MODES = list(PERSONALITY.keys())
-
-# 日本時間
-JST = pytz.timezone("Asia/Tokyo")
+welcome_enabled = True
 
 @bot.event
 async def on_ready():
@@ -98,145 +64,6 @@ async def on_ready():
         print(f"Synced {len(synced)} global commands")
     except Exception as e:
         print(e)
-
-# 管理者用チェックコマンド
-@bot.tree.command(name="check_genai", description="genai SDK と利用可能モデルを確認します（管理者用）")
-@app_commands.checks.has_permissions(administrator=True)
-async def check_genai(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True, thinking=True)
-
-    def sync_check():
-        import google.generativeai as genai
-        out = []
-        out.append(f"genai version: {getattr(genai, '__version__', 'unknown')}")
-        try:
-            models = genai.list_models()
-            names = []
-            for m in models:
-                name = getattr(m, "name", None) or getattr(m, "model", None) or str(m)
-                names.append(name)
-            out.append("available models: " + ", ".join(names))
-        except Exception as e:
-            out.append(f"list_models error: {type(e).__name__} {e}")
-        return "\n".join(out)
-
-    loop = asyncio.get_event_loop()
-    result = await loop.run_in_executor(None, sync_check)
-    for i in range(0, len(result), 1900):
-        await interaction.followup.send(result[i:i+1900], ephemeral=True)
-
-# -----------------------------
-# ここから AI 会話機能
-# -----------------------------
-
-@bot.tree.command(name="mode", description="AIの性格をランダムで決めます")
-async def mode(interaction: discord.Interaction):
-    user_id = interaction.user.id
-    selected = random.choice(MODES)
-
-    if user_id not in user_sessions:
-        user_sessions[user_id] = {
-            "history": [],
-            "mode": selected,
-            "chat": model.start_chat(history=[])
-        }
-    else:
-        user_sessions[user_id]["mode"] = selected
-        user_sessions[user_id]["chat"] = model.start_chat(history=[])
-
-    await interaction.response.send_message(f"あなたのAIモードは **{selected}** に決定したよ！")
-
-@bot.tree.command(name="reset", description="AIとの会話をリセットします")
-async def reset(interaction: discord.Interaction):
-    user_id = interaction.user.id
-    if user_id in user_sessions:
-        user_sessions[user_id]["history"] = []
-    await interaction.response.send_message("会話をリセットしたよ！")
-
-@bot.tree.command(name="ai", description="AIと会話します")
-async def ai(interaction: discord.Interaction, prompt: str):
-    await interaction.response.defer(thinking=True)
-
-    user_id = interaction.user.id
-
-    if user_id not in user_sessions:
-        user_sessions[user_id] = {
-            "mode": "robot",
-            "history": []
-        }
-
-    session = user_sessions[user_id]
-    mode = session["mode"]
-
-    chat = model.start_chat(history=[])
-
-    try:
-        await asyncio.get_event_loop().run_in_executor(
-            None,
-            lambda: chat.send_message(
-                PERSONALITY[mode],
-                request_options={"timeout": 60}
-            )
-        )
-    except Exception as e:
-        print("personality send error:", e)
-        await interaction.followup.send("⚠️ AI の初期化に失敗しました。時間をおいて再試行してください。")
-        return
-
-    try:
-        await asyncio.get_event_loop().run_in_executor(
-            None,
-            lambda: chat.send_message(
-                PERSONALITY[mode],
-                request_options={"timeout": 60}
-            )
-        )
-    except Exception as e:
-        print("quota error:", e)
-        await interaction.followup.send("⚠️ 現在AIの利用上限に達しています。しばらくしてからもう一度試してください。")
-        return
-
-    try:
-        response = await asyncio.get_event_loop().run_in_executor(
-            None,
-            lambda: chat.send_message(
-                prompt,
-                request_options={"timeout": 60}
-            )
-        )
-    except Exception as e:
-        print("chat send error:", e)
-        await interaction.followup.send("⚠️ AI 応答の取得に失敗しました。時間をおいて再試行してください。")
-        return
-
-    text = getattr(response, "text", None)
-    if not text:
-        try:
-            candidates = getattr(response, "candidates", None)
-            if candidates and len(candidates) > 0:
-                text = getattr(candidates[0], "content", None) or str(candidates[0])
-        except Exception:
-            text = None
-    if not text:
-        text = str(response)
-
-    reply = (
-        f"👤 **{interaction.user.display_name}**: {prompt}\n"
-        f"🤖 **AI（{mode}）**: {text}"
-    )
-    MAX_LEN = 2000
-
-    if len(reply) <= MAX_LEN:
-        await interaction.followup.send(reply)
-    else:
-        for i in range(0, len(reply), MAX_LEN):
-            await interaction.followup.send(reply[i:i+MAX_LEN])
-
-# -----------------------------
-# ここまで AI 会話機能
-# -----------------------------
-
-welcome_enabled = True
 
 @bot.tree.command(name="setchannel", description="毎日19時に送信するチャンネルを設定します")
 async def setchannel(interaction: discord.Interaction, channel: discord.TextChannel):
@@ -264,6 +91,7 @@ async def send_daily_message():
     if target_channel_id is None:
         return
 
+    JST = pytz.timezone("Asia/Tokyo")
     now = datetime.datetime.now(JST)
     if now.hour == 19 and now.minute == 0:
         channel = bot.get_channel(target_channel_id)
@@ -303,7 +131,6 @@ async def on_member_join(member):
         print(f"チャンネル作成エラー: {e}")
         return
 
-    # ★ 入隊フローセッション開始
     apply_sessions[member.id] = {
         "step": 1,
         "answers": {},
@@ -333,24 +160,20 @@ async def on_member_join(member):
 
 @bot.event
 async def on_message(message: discord.Message):
-    # Bot自身は無視
     if message.author.bot:
         return
 
     user_id = message.author.id
 
-    # 入隊フロー中か？
     if user_id in apply_sessions:
         session = apply_sessions[user_id]
 
-        # 他チャンネルのメッセージは無視（welcome-チャンネルだけで進行）
         if message.channel.id != session.get("channel_id"):
             await bot.process_commands(message)
             return
 
         step = session["step"]
 
-        # STEP 1：最初の5つの質問（まとめて回答）
         if step == 1:
             session["answers"]["basic"] = message.content
             session["step"] = 2
@@ -361,7 +184,6 @@ async def on_message(message: discord.Message):
             )
             return
 
-        # STEP 2：画像受付
         if step == 2:
             if message.content.lower() == "完了":
                 session["step"] = 3
@@ -382,7 +204,6 @@ async def on_message(message: discord.Message):
             await message.channel.send("画像を送るか、完了と入力してください。")
             return
 
-        # STEP 3：参加条件（YES/NO）
         if step == 3:
             text = message.content.strip().lower()
             if any(k in text for k in ["はい", "ok", "大丈夫", "問題ない"]):
@@ -394,16 +215,13 @@ async def on_message(message: discord.Message):
                 )
                 return
             elif any(k in text for k in ["いいえ", "無理", "できない"]):
-                await message.channel.send(
-                    "申し訳ありませんが、参加条件を満たさないため入隊をお断りさせていただきます。"
-                )
+                await message.channel.send("申し訳ありませんが、参加条件を満たさないため入隊をお断りさせていただきます。")
                 del apply_sessions[user_id]
                 return
             else:
                 await message.channel.send("「はい」または「いいえ」で回答してください。")
                 return
 
-        # STEP 4：マスター経験の有無
         if step == 4:
             text = message.content.strip().lower()
             if any(k in text for k in ["いいえ", "no", "ない", "未経験"]):
@@ -426,7 +244,6 @@ async def on_message(message: discord.Message):
                 await message.channel.send("「はい」または「いいえ」で回答してください。")
                 return
 
-        # STEP 4-1：マスターシーズン入力
         if step == 41:
             seasons = extract_seasons(message.content)
 
@@ -435,9 +252,7 @@ async def on_message(message: discord.Message):
                 return
 
             if not check_master_seasons(seasons):
-                await message.channel.send(
-                    "申し訳ありませんが、当クランの基準に満たないため入隊をお断りさせていただきます。"
-                )
+                await message.channel.send("申し訳ありませんが、当クランの基準に満たないため入隊をお断りさせていただきます。")
                 del apply_sessions[user_id]
                 return
 
@@ -450,7 +265,6 @@ async def on_message(message: discord.Message):
             )
             return
 
-        # STEP 5：説明会の日程
         if step == 5:
             session["answers"]["meeting"] = message.content
 
@@ -477,7 +291,6 @@ async def on_message(message: discord.Message):
             del apply_sessions[user_id]
             return
 
-    # 他のコマンドも動かす
     await bot.process_commands(message)
 
 bot.run(TOKEN)
