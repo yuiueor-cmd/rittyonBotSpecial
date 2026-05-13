@@ -6,10 +6,14 @@ import datetime
 import pytz
 from flask import Flask
 from threading import Thread
-import random
-import asyncio
-import traceback
 import re
+import aiohttp
+from dotenv import load_dotenv
+
+load_dotenv()
+
+APEX_BRIDGE_URL = "https://api.mozambiquehe.re/bridge"
+ALS_SITE = "https://apexlegendsstatus.com/"
 
 app = Flask(__name__)
 
@@ -84,6 +88,101 @@ async def welcome_off(interaction: discord.Interaction):
     global welcome_enabled
     welcome_enabled = False
     await interaction.response.send_message("⛔ 自動ウェルカムチャンネル作成を **無効化** しました。", ephemeral=True)
+
+async def fetch_apex_bridge(player: str, platform: str, api_key: str):
+    params = {"player": player.strip(), "platform": platform, "version": "5"}
+    headers = {"Authorization": api_key}
+    timeout = aiohttp.ClientTimeout(total=20)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.get(APEX_BRIDGE_URL, params=params, headers=headers) as resp:
+            try:
+                data = await resp.json(content_type=None)
+            except Exception:
+                return None, f"APIの応答を解析できませんでした (HTTP {resp.status})。"
+
+            if not isinstance(data, dict):
+                return None, "想定外のAPI応答です。"
+
+            err = data.get("Error") or data.get("error")
+            if err:
+                return None, str(err)
+
+            if resp.status == 404:
+                return None, "プレイヤーが見つかりません。PCの場合は **EAアカウント名**（Steam表示名ではない場合があります）と公開設定を確認してください。"
+            if resp.status == 403:
+                return None, "APIキーが無効です。`APEX_LEGENDS_API_KEY` を確認してください。"
+            if resp.status == 429:
+                return None, "APIのレート制限です。しばらく待ってから再度お試しください。"
+            if resp.status >= 400:
+                return None, f"APIエラー (HTTP {resp.status})。"
+
+            return data, None
+
+@bot.tree.command(name="apex_rp", description="Apex BRランクのRPを表示（Apex Legends Status と同系の Mozambique API）")
+@app_commands.describe(
+    ingame_name="ゲーム内のユーザー名（PCは EA アカウント名。Steam連携時はEA側の名前）",
+    platform="プラットフォーム",
+)
+@app_commands.choices(platform=[
+    app_commands.Choice(name="PC", value="PC"),
+    app_commands.Choice(name="PlayStation", value="PS4"),
+    app_commands.Choice(name="Xbox", value="X1"),
+])
+async def apex_rp(interaction: discord.Interaction, ingame_name: str, platform: app_commands.Choice[str]):
+    api_key = (os.environ.get("APEX_LEGENDS_API_KEY") or "").strip()
+    if not api_key:
+        await interaction.response.send_message(
+            "環境変数 **`APEX_LEGENDS_API_KEY`** が未設定です。"
+            "[portal.apexlegendsapi.com](https://portal.apexlegendsapi.com/) で無料キーを発行し、`.env` に追記してください。",
+            ephemeral=True,
+        )
+        return
+
+    await interaction.response.defer(thinking=True)
+    data, err = await fetch_apex_bridge(ingame_name, platform.value, api_key)
+    if err:
+        await interaction.followup.send(f"❌ {err}", ephemeral=True)
+        return
+
+    glob = data.get("global") or {}
+    name = glob.get("name") or ingame_name.strip()
+    uid = glob.get("uid")
+    api_platform = glob.get("platform") or platform.value
+    level = glob.get("level")
+    rank = glob.get("rank") or {}
+    rscore = rank.get("rankScore")
+    rname = rank.get("rankName") or "—"
+    rdiv = rank.get("rankDiv")
+    ladder = rank.get("ladderPosPlatform")
+
+    div_str = f" {rdiv}" if rdiv not in (None, "") else ""
+    profile_url = f"https://apexlegendsstatus.com/profile/uid/{api_platform}/{uid}" if uid else ALS_SITE
+
+    if rscore is None:
+        rp_display = "—"
+    else:
+        try:
+            rp_display = f"**{int(float(rscore)):,}**"
+        except (TypeError, ValueError):
+            rp_display = str(rscore)
+
+    embed = discord.Embed(
+        title=f"🏅 {name}",
+        url=profile_url,
+        color=0xDA292A,
+    )
+    embed.add_field(name="RP", value=rp_display, inline=True)
+    embed.add_field(name="ランク", value=f"{rname}{div_str}", inline=True)
+    embed.add_field(name="レベル", value=str(level) if level is not None else "—", inline=True)
+    if ladder is not None:
+        embed.add_field(name="プラットフォーム内順位", value=str(ladder), inline=True)
+    embed.description = (
+        f"プラットフォーム: **{api_platform}**\n"
+        f"詳細プロフィール: [Apex Legends Status]({profile_url})"
+    )
+    embed.set_footer(text="Data provided by Apex Legends Status")
+
+    await interaction.followup.send(embed=embed)
 
 @tasks.loop(minutes=1)
 async def send_daily_message():
