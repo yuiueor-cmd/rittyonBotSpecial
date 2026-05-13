@@ -139,6 +139,41 @@ async def welcome_off(interaction: discord.Interaction):
     welcome_enabled = False
     await interaction.response.send_message("⛔ 自動ウェルカムチャンネル作成を **無効化** しました。", ephemeral=True)
 
+@bot.tree.command(name="help", description="このボットの使い方を表示します")
+@app_commands.describe(ephemeral="はいにすると自分にだけ表示")
+async def help_command(interaction: discord.Interaction, ephemeral: bool = False):
+    ch = apex.ROSTER_CHANNEL_NAME
+    embed = discord.Embed(
+        title="📖 Rittyon Bot 使い方",
+        color=0x5865F2,
+        description=(
+            f"**ロスター登録（`#{ch}`）**\n"
+            "管理者が **1行1人** で入力します。Discord と Apex を結びつけます。\n"
+            f"• `Discordの数値ID,PC,EAアカウント名` 例: `123456789012345678,PC,YourEAName`\n"
+            "• `|` 区切りでも可\n"
+            "• メンションでも可: `<@123456789012345678> PC EA名`（ユーザーをメンションしてから続きを書く）\n"
+            "• PC の名前は **EA アカウント名**（Steam 表示名と違うことがあります）\n"
+            "• 編集後は `/apex_roster_reload`（管理者）か、しばらく待つと再読込されます\n\n"
+            "**Apex（要 API キー）**\n"
+            "• `/apex_stats` … ロスター登録済みの **今の戦績**（省略時は自分）\n"
+            "• `/apex_rp` … 名前と PF を毎回指定して戦績（未登録でも可）\n"
+            "• `/apex_clan_rank` … ロスター全員の **RP か累計キル** ランキング（時間がかかります）\n"
+            "• `/apex_sync_roles` … **今の BR ランク**に合わせてランクロールを付け替え（省略時は自分）\n"
+            "• `/apex_sync_all_roles` … ロスター全員を一括同期（**管理者**・所要時間大）\n"
+            f"• `/apex_roster_reload` … `#{ch}` を強制再読込（**管理者**）\n\n"
+            "**クラン・集合**\n"
+            "• `/setchannel` … 毎日 **19時 JST** に出欠案内を送るチャンネルを設定\n"
+            "• `/welcome_on` / `/welcome_off` … 新規向けウェルカム自動作成（**管理者**）\n\n"
+            "**自動で動くこと**\n"
+            "• メンバー参加時: ロスターにいれば **ランクロール同期**（数秒後）\n"
+            "• マップ／クラフト: 環境変数 `APEX_MAP_CRAFT_CHANNEL_ID` があるとき、**変化時**に投稿（約20分ごと）\n\n"
+            "データ: [Apex Legends Status](https://apexlegendsstatus.com/) 系 API\n"
+            "このメッセージ: オプション **ephemeral** をオンにすると自分にだけ表示"
+        ),
+    )
+    embed.set_footer(text="困ったら管理者に聞いてね")
+    await interaction.response.send_message(embed=embed, ephemeral=ephemeral)
+
 @bot.tree.command(name="apex_roster_reload", description="`#apexid` チャンネルからロスターを再読込します（管理者）")
 @app_commands.checks.has_permissions(administrator=True)
 async def apex_roster_reload(interaction: discord.Interaction):
