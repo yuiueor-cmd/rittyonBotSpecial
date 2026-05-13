@@ -7,13 +7,13 @@ import pytz
 from flask import Flask
 from threading import Thread
 import re
-import aiohttp
+import asyncio
+from typing import Optional
+
+import apex_helpers as apex
 from dotenv import load_dotenv
 
 load_dotenv()
-
-APEX_BRIDGE_URL = "https://api.mozambiquehe.re/bridge"
-ALS_SITE = "https://apexlegendsstatus.com/"
 
 app = Flask(__name__)
 
@@ -58,11 +58,61 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 target_channel_id = None
 welcome_enabled = True
 
+
+async def _maybe_apex_role_sync_on_join(member: discord.Member):
+    await asyncio.sleep(5)
+    try:
+        key = apex.get_api_key()
+        if not key or not member.guild:
+            return
+        entries = await apex.get_roster(member.guild)
+        if not apex.find_roster_entry(entries, member.id):
+            return
+        ok, msg = await apex.sync_rank_roles_from_api(member, key)
+        if not ok:
+            print(f"[apex join sync] {member.id}: {msg}")
+    except Exception as e:
+        print(f"[apex join sync] error: {e}")
+
+
+async def try_post_map_craft_update():
+    api_key = apex.get_api_key()
+    raw = (os.environ.get("APEX_MAP_CRAFT_CHANNEL_ID") or "").strip()
+    if not api_key or not raw:
+        return
+    try:
+        cid = int(raw)
+    except ValueError:
+        return
+    m, c = await apex.fetch_map_and_craft(api_key)
+    if not apex.touch_map_craft_fingerprint(m, c):
+        return
+    ch = bot.get_channel(cid)
+    if ch and isinstance(ch, discord.TextChannel):
+        try:
+            await ch.send(apex.format_map_craft_message(m, c))
+        except discord.HTTPException as e:
+            print(f"map/craft post failed: {e}")
+
+
+@tasks.loop(minutes=20)
+async def poll_map_craft_loop():
+    await try_post_map_craft_update()
+
+
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user}")
     keep_alive()
     send_daily_message.start()
+    if not poll_map_craft_loop.is_running():
+        poll_map_craft_loop.start()
+
+    async def _delayed_first_map_craft():
+        await asyncio.sleep(20)
+        await try_post_map_craft_update()
+
+    asyncio.create_task(_delayed_first_map_craft())
     try:
         synced = await bot.tree.sync()
         print(f"Synced {len(synced)} global commands")
@@ -89,34 +139,176 @@ async def welcome_off(interaction: discord.Interaction):
     welcome_enabled = False
     await interaction.response.send_message("⛔ 自動ウェルカムチャンネル作成を **無効化** しました。", ephemeral=True)
 
-async def fetch_apex_bridge(player: str, platform: str, api_key: str):
-    params = {"player": player.strip(), "platform": platform, "version": "5"}
-    headers = {"Authorization": api_key}
-    timeout = aiohttp.ClientTimeout(total=20)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.get(APEX_BRIDGE_URL, params=params, headers=headers) as resp:
-            try:
-                data = await resp.json(content_type=None)
-            except Exception:
-                return None, f"APIの応答を解析できませんでした (HTTP {resp.status})。"
+@bot.tree.command(name="apex_roster_reload", description="`#apexid` チャンネルからロスターを再読込します（管理者）")
+@app_commands.checks.has_permissions(administrator=True)
+async def apex_roster_reload(interaction: discord.Interaction):
+    if not interaction.guild:
+        await interaction.response.send_message("サーバー内でのみ使えます。", ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    apex.invalidate_roster_cache(interaction.guild.id)
+    entries = await apex.get_roster(interaction.guild, force_reload=True)
+    await interaction.followup.send(
+        f"✅ 読み込み完了: **{len(entries)}** 件（`#{apex.ROSTER_CHANNEL_NAME}`）\n"
+        "1行形式: `DiscordユーザーID|PC|Apex名` または `<@ID> PC Apex名`",
+        ephemeral=True,
+    )
 
-            if not isinstance(data, dict):
-                return None, "想定外のAPI応答です。"
+@bot.tree.command(name="apex_stats", description="登録済みメンバーの今の戦績（RP・ランク・累計キル等）を表示")
+@app_commands.describe(target="省略時は自分")
+async def apex_stats(interaction: discord.Interaction, target: Optional[discord.Member] = None):
+    api_key = apex.get_api_key()
+    if not api_key:
+        await interaction.response.send_message(
+            "`APEX_LEGENDS_API_KEY` が未設定です。",
+            ephemeral=True,
+        )
+        return
+    if not interaction.guild:
+        await interaction.response.send_message("サーバー内でのみ使えます。", ephemeral=True)
+        return
 
-            err = data.get("Error") or data.get("error")
-            if err:
-                return None, str(err)
+    member = target or interaction.user
+    if not isinstance(member, discord.Member):
+        member = interaction.guild.get_member(member.id) or interaction.guild.get_member(interaction.user.id)
+    if member is None:
+        await interaction.response.send_message("メンバーを取得できませんでした。", ephemeral=True)
+        return
 
-            if resp.status == 404:
-                return None, "プレイヤーが見つかりません。PCの場合は **EAアカウント名**（Steam表示名ではない場合があります）と公開設定を確認してください。"
-            if resp.status == 403:
-                return None, "APIキーが無効です。`APEX_LEGENDS_API_KEY` を確認してください。"
-            if resp.status == 429:
-                return None, "APIのレート制限です。しばらく待ってから再度お試しください。"
-            if resp.status >= 400:
-                return None, f"APIエラー (HTTP {resp.status})。"
+    await interaction.response.defer(thinking=True)
+    entries = await apex.get_roster(interaction.guild)
+    row = apex.find_roster_entry(entries, member.id)
+    if not row:
+        await interaction.followup.send(
+            f"{member.mention} は `#{apex.ROSTER_CHANNEL_NAME}` に未登録です。\n"
+            "管理者が `DiscordID|PC|EA名` 形式で1行追加してください。",
+            ephemeral=True,
+        )
+        return
 
-            return data, None
+    data, err = await apex.fetch_apex_bridge(row["apex_name"], row["platform"], api_key)
+    if err or not data:
+        await interaction.followup.send(f"❌ {err or 'APIエラー'}", ephemeral=True)
+        return
+
+    embed = apex.build_stats_embed(data)
+    await interaction.followup.send(embed=embed)
+
+@bot.tree.command(name="apex_clan_rank", description="`#apexid` の全員をAPIで取り、RPまたは累計キルでランキング表示")
+@app_commands.describe(metric="並び順の指標")
+@app_commands.choices(metric=[
+    app_commands.Choice(name="BRのRP", value="rp"),
+    app_commands.Choice(name="累計キル", value="kills"),
+])
+async def apex_clan_rank(interaction: discord.Interaction, metric: app_commands.Choice[str]):
+    api_key = apex.get_api_key()
+    if not api_key:
+        await interaction.response.send_message("`APEX_LEGENDS_API_KEY` が未設定です。", ephemeral=True)
+        return
+    if not interaction.guild:
+        await interaction.response.send_message("サーバー内でのみ使えます。", ephemeral=True)
+        return
+
+    await interaction.response.defer(thinking=True)
+    rows, err = await apex.build_clan_rank_rows(interaction.guild, api_key, metric.value)
+    if err:
+        await interaction.followup.send(f"❌ {err}", ephemeral=True)
+        return
+
+    lines = []
+    medals = ["🥇", "🥈", "🥉"]
+    for i, r in enumerate(rows[:20]):
+        med = medals[i] if i < 3 else f"{i + 1}."
+        if r.get("error"):
+            lines.append(f"{med} {r['mention']} — ⚠️ {r['error']}")
+        elif metric.value == "kills":
+            kv = r.get("kills")
+            rk = r.get("rank_name") or "?"
+            if kv is not None:
+                lines.append(f"{med} {r['mention']} **キル {kv:,}** （{rk}）")
+            else:
+                lines.append(f"{med} {r['mention']} キル — （{rk}）")
+        else:
+            rv = r.get("rp")
+            rk = r.get("rank_name") or "?"
+            if rv is not None:
+                lines.append(f"{med} {r['mention']} **RP {rv:,}** （{rk}）")
+            else:
+                lines.append(f"{med} {r['mention']} RP — （{rk}）")
+
+    body = "\n".join(lines) if lines else "（データなし）"
+    embed = discord.Embed(
+        title=f"クランランキング（{'RP' if metric.value == 'rp' else '累計キル'}）",
+        description=body[:4000],
+        color=0xDA292A,
+    )
+    embed.set_footer(text="Data provided by Apex Legends Status")
+    await interaction.followup.send(embed=embed)
+
+@bot.tree.command(name="apex_sync_roles", description="APIのBRランクに合わせてランクロールを付け替え（`#apexid` 登録者）")
+@app_commands.describe(target="省略時は自分。他人を指定する場合はロール管理権限が必要です")
+async def apex_sync_roles(interaction: discord.Interaction, target: Optional[discord.Member] = None):
+    api_key = apex.get_api_key()
+    if not api_key:
+        await interaction.response.send_message("`APEX_LEGENDS_API_KEY` が未設定です。", ephemeral=True)
+        return
+    if not interaction.guild:
+        await interaction.response.send_message("サーバー内でのみ使えます。", ephemeral=True)
+        return
+
+    subject = target or interaction.user
+    if not isinstance(subject, discord.Member):
+        subject = interaction.guild.get_member(subject.id)
+    if subject is None:
+        await interaction.response.send_message("メンバーを取得できませんでした。", ephemeral=True)
+        return
+
+    if target is not None and target.id != interaction.user.id:
+        if not interaction.user.guild_permissions.manage_roles:
+            await interaction.response.send_message("他人の同期には **ロールの管理** 権限が必要です。", ephemeral=True)
+            return
+
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    ok, msg = await apex.sync_rank_roles_from_api(subject, api_key)
+    await interaction.followup.send(("✅ " if ok else "❌ ") + msg, ephemeral=True)
+
+@bot.tree.command(name="apex_sync_all_roles", description="ロスター全員のランクロールをAPIで一括同期（管理者・時間がかかります）")
+@app_commands.checks.has_permissions(administrator=True)
+async def apex_sync_all_roles(interaction: discord.Interaction):
+    api_key = apex.get_api_key()
+    if not api_key:
+        await interaction.response.send_message("`APEX_LEGENDS_API_KEY` が未設定です。", ephemeral=True)
+        return
+    if not interaction.guild:
+        await interaction.response.send_message("サーバー内でのみ使えます。", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    entries = await apex.get_roster(interaction.guild, force_reload=True)
+    ok_n = err_n = 0
+    err_samples: list[str] = []
+    for e in entries:
+        m = interaction.guild.get_member(int(e["discord_id"]))
+        if not m:
+            err_n += 1
+            if len(err_samples) < 3:
+                err_samples.append(f"ID {e['discord_id']}: サーバーに不在")
+            await asyncio.sleep(0.2)
+            continue
+        ok, msg = await apex.sync_rank_roles_from_api(m, api_key)
+        if ok:
+            ok_n += 1
+        else:
+            err_n += 1
+            if len(err_samples) < 5:
+                err_samples.append(f"{m.display_name}: {msg}")
+        await asyncio.sleep(2.2)
+
+    extra = "\n".join(err_samples) if err_samples else "なし"
+    await interaction.followup.send(
+        f"完了: 成功 **{ok_n}** / 失敗 **{err_n}**\n失敗例:\n{extra[:1800]}",
+        ephemeral=True,
+    )
 
 @bot.tree.command(name="apex_rp", description="Apex BRランクのRPを表示（Apex Legends Status と同系の Mozambique API）")
 @app_commands.describe(
@@ -129,7 +321,7 @@ async def fetch_apex_bridge(player: str, platform: str, api_key: str):
     app_commands.Choice(name="Xbox", value="X1"),
 ])
 async def apex_rp(interaction: discord.Interaction, ingame_name: str, platform: app_commands.Choice[str]):
-    api_key = (os.environ.get("APEX_LEGENDS_API_KEY") or "").strip()
+    api_key = apex.get_api_key()
     if not api_key:
         await interaction.response.send_message(
             "環境変数 **`APEX_LEGENDS_API_KEY`** が未設定です。"
@@ -139,49 +331,12 @@ async def apex_rp(interaction: discord.Interaction, ingame_name: str, platform: 
         return
 
     await interaction.response.defer(thinking=True)
-    data, err = await fetch_apex_bridge(ingame_name, platform.value, api_key)
+    data, err = await apex.fetch_apex_bridge(ingame_name, platform.value, api_key)
     if err:
         await interaction.followup.send(f"❌ {err}", ephemeral=True)
         return
 
-    glob = data.get("global") or {}
-    name = glob.get("name") or ingame_name.strip()
-    uid = glob.get("uid")
-    api_platform = glob.get("platform") or platform.value
-    level = glob.get("level")
-    rank = glob.get("rank") or {}
-    rscore = rank.get("rankScore")
-    rname = rank.get("rankName") or "—"
-    rdiv = rank.get("rankDiv")
-    ladder = rank.get("ladderPosPlatform")
-
-    div_str = f" {rdiv}" if rdiv not in (None, "") else ""
-    profile_url = f"https://apexlegendsstatus.com/profile/uid/{api_platform}/{uid}" if uid else ALS_SITE
-
-    if rscore is None:
-        rp_display = "—"
-    else:
-        try:
-            rp_display = f"**{int(float(rscore)):,}**"
-        except (TypeError, ValueError):
-            rp_display = str(rscore)
-
-    embed = discord.Embed(
-        title=f"🏅 {name}",
-        url=profile_url,
-        color=0xDA292A,
-    )
-    embed.add_field(name="RP", value=rp_display, inline=True)
-    embed.add_field(name="ランク", value=f"{rname}{div_str}", inline=True)
-    embed.add_field(name="レベル", value=str(level) if level is not None else "—", inline=True)
-    if ladder is not None:
-        embed.add_field(name="プラットフォーム内順位", value=str(ladder), inline=True)
-    embed.description = (
-        f"プラットフォーム: **{api_platform}**\n"
-        f"詳細プロフィール: [Apex Legends Status]({profile_url})"
-    )
-    embed.set_footer(text="Data provided by Apex Legends Status")
-
+    embed = apex.build_stats_embed(data, title_prefix="🏅 ")
     await interaction.followup.send(embed=embed)
 
 @tasks.loop(minutes=1)
@@ -206,6 +361,8 @@ async def send_daily_message():
 
 @bot.event
 async def on_member_join(member):
+    asyncio.create_task(_maybe_apex_role_sync_on_join(member))
+
     global welcome_enabled
     if not welcome_enabled:
         return
@@ -261,6 +418,9 @@ async def on_member_join(member):
 async def on_message(message: discord.Message):
     if message.author.bot:
         return
+
+    if message.guild and message.channel.name == apex.ROSTER_CHANNEL_NAME:
+        apex.invalidate_roster_cache(message.guild.id)
 
     user_id = message.author.id
 
