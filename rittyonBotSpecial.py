@@ -150,6 +150,8 @@ async def help_command(interaction: discord.Interaction, ephemeral: bool = False
             f"**ロスター登録（`#{ch}`）**\n"
             "管理者が **1行1人** で入力します。Discord と Apex を結びつけます。\n"
             f"• `Discordの数値ID,PC,EAアカウント名` 例: `123456789012345678,PC,YourEAName`\n"
+            "• 名前検索で出ない人は UID 指定可: `123456789012345678,PC,uid:100xxxxxxxxxx`\n"
+            "• ALS の UID URL も可: `123456789012345678,PC,https://apexlegendsstatus.com/profile/uid/PC/100xxxxxxxxxx`\n"
             "• `|` 区切りでも可\n"
             "• メンションでも可: `<@123456789012345678> PC EA名`（ユーザーをメンションしてから続きを書く）\n"
             "• PC の名前は **EA アカウント名**（Steam 表示名と違うことがあります）\n"
@@ -185,7 +187,7 @@ async def apex_roster_reload(interaction: discord.Interaction):
     entries = await apex.get_roster(interaction.guild, force_reload=True)
     await interaction.followup.send(
         f"✅ 読み込み完了: **{len(entries)}** 件（`#{apex.ROSTER_CHANNEL_NAME}`）\n"
-        "1行形式: `DiscordユーザーID|PC|Apex名` または `<@ID> PC Apex名`",
+        "1行形式: `DiscordユーザーID|PC|Apex名` / `DiscordユーザーID|PC|uid:100...` / `<@ID> PC Apex名`",
         ephemeral=True,
     )
 
@@ -216,7 +218,7 @@ async def apex_stats(interaction: discord.Interaction, target: Optional[discord.
     if not row:
         await interaction.followup.send(
             f"{member.mention} は `#{apex.ROSTER_CHANNEL_NAME}` に未登録です。\n"
-            "管理者が `DiscordID|PC|EA名` 形式で1行追加してください。",
+            "管理者が `DiscordID|PC|EA名` または `DiscordID|PC|uid:100...` 形式で1行追加してください。",
             ephemeral=True,
         )
         return

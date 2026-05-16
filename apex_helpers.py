@@ -58,8 +58,24 @@ def get_api_key() -> str | None:
     return k or None
 
 
+def extract_uid(value: str) -> str | None:
+    text = value.strip()
+    m = re.search(r"/profile/uid/[A-Z0-9]+/(\d+)", text, re.IGNORECASE)
+    if m:
+        return m.group(1)
+    m = re.match(r"uid\s*:\s*(\d+)$", text, re.IGNORECASE)
+    if m:
+        return m.group(1)
+    return text if re.fullmatch(r"\d{8,}", text) else None
+
+
 async def fetch_apex_bridge(player: str, platform: str, api_key: str) -> tuple[dict | None, str | None]:
-    params = {"player": player.strip(), "platform": platform, "version": "5"}
+    player = player.strip()
+    uid = extract_uid(player)
+    if uid:
+        params = {"uid": uid, "platform": platform, "version": "5"}
+    else:
+        params = {"player": player, "platform": platform, "version": "5"}
     headers = {"Authorization": api_key}
     timeout = aiohttp.ClientTimeout(total=20)
     async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -194,6 +210,7 @@ def parse_roster_line(line: str) -> dict[str, Any] | None:
             "discord_id": int(m.group(1)),
             "platform": plat,
             "apex_name": m.group(3).strip(),
+            "lookup_type": "uid" if extract_uid(m.group(3)) else "name",
         }
     m = _ROSTER_MENTION.match(s)
     if m:
@@ -204,6 +221,7 @@ def parse_roster_line(line: str) -> dict[str, Any] | None:
             "discord_id": int(m.group(1)),
             "platform": plat,
             "apex_name": m.group(3).strip(),
+            "lookup_type": "uid" if extract_uid(m.group(3)) else "name",
         }
     return None
 
@@ -422,7 +440,7 @@ async def sync_rank_roles_from_api(member: discord.Member, api_key: str) -> tupl
     entries = await get_roster(member.guild)
     row = find_roster_entry(entries, member.id)
     if not row:
-        return False, f"`#{ROSTER_CHANNEL_NAME}` にこのユーザーの行がありません（形式: `DiscordID|PC|Apex名`）。"
+        return False, f"`#{ROSTER_CHANNEL_NAME}` にこのユーザーの行がありません（形式: `DiscordID|PC|Apex名` または `DiscordID|PC|uid:100...`）。"
     data, err = await fetch_apex_bridge(row["apex_name"], row["platform"], api_key)
     if err or not data:
         return False, err or "APIエラー"
@@ -447,7 +465,7 @@ async def build_clan_rank_rows(
     """metric: ``rp`` | ``kills``. Respects Mozambique rate limits between calls."""
     entries = await get_roster(guild)
     if not entries:
-        return [], f"`#{ROSTER_CHANNEL_NAME}` に有効な行がありません（例: `123456789012345678|PC|YourEAName`）。"
+        return [], f"`#{ROSTER_CHANNEL_NAME}` に有効な行がありません（例: `123456789012345678|PC|YourEAName` / `123456789012345678|PC|uid:100...`）。"
 
     rows: list[dict[str, Any]] = []
     for e in entries:
