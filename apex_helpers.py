@@ -484,6 +484,7 @@ async def build_clan_rank_rows(
                     "rp": None,
                     "kills": None,
                     "rank_name": None,
+                    "rank_div": None,
                 }
             )
         else:
@@ -504,6 +505,7 @@ async def build_clan_rank_rows(
                     "rp": rp,
                     "kills": kills,
                     "rank_name": br_rank_name_from_bridge(data),
+                    "rank_div": rank.get("rankDiv"),
                 }
             )
         await asyncio.sleep(2.2)

@@ -261,17 +261,21 @@ async def apex_clan_rank(interaction: discord.Interaction, metric: app_commands.
         elif metric.value == "kills":
             kv = r.get("kills")
             rk = r.get("rank_name") or "?"
+            rd = r.get("rank_div")
+            rank_label = f"{rk} {rd}" if rd not in (None, "", 0) else rk
             if kv is not None:
-                lines.append(f"{med} {r['mention']} **キル {kv:,}** （{rk}）")
+                lines.append(f"{med} {r['mention']} **キル {kv:,}** （{rank_label}）")
             else:
-                lines.append(f"{med} {r['mention']} キル — （{rk}）")
+                lines.append(f"{med} {r['mention']} キル — （{rank_label}）")
         else:
             rv = r.get("rp")
             rk = r.get("rank_name") or "?"
+            rd = r.get("rank_div")
+            rank_label = f"{rk} {rd}" if rd not in (None, "", 0) else rk
             if rv is not None:
-                lines.append(f"{med} {r['mention']} **RP {rv:,}** （{rk}）")
+                lines.append(f"{med} {r['mention']} **RP {rv:,}** （{rank_label}）")
             else:
-                lines.append(f"{med} {r['mention']} RP — （{rk}）")
+                lines.append(f"{med} {r['mention']} RP — （{rank_label}）")
 
     body = "\n".join(lines) if lines else "（データなし）"
     embed = discord.Embed(
