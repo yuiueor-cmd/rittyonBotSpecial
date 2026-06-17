@@ -282,6 +282,151 @@ def br_rank_name_from_bridge(data: dict[str, Any]) -> str | None:
     return str(name) if name else None
 
 
+# Ranked match RP / キルポ計算（公式仕様に準拠した近似）
+KILLPO_SOFT_CAP_ELIMS = 6  # キル+アシスト合計がこの数までフル値、以降は半減
+
+RANK_ENTRY_COST: dict[str, int] = {
+    "Rookie": 0,
+    "Bronze": 10,
+    "Silver": 20,
+    "Gold": 38,
+    "Platinum": 48,
+    "Diamond": 65,
+    "Master": 90,
+    "Apex Predator": 90,
+}
+
+RANK_LABEL_JA: dict[str, str] = {
+    "Rookie": "ルーキー",
+    "Bronze": "ブロンズ",
+    "Silver": "シルバー",
+    "Gold": "ゴールド",
+    "Platinum": "プラチナ",
+    "Diamond": "ダイヤモンド",
+    "Master": "マスター",
+    "Apex Predator": "プレデター",
+}
+
+
+def placement_rp(placement: int) -> int:
+    place = max(1, min(20, placement))
+    if place == 1:
+        return 125
+    if place == 2:
+        return 95
+    if place == 3:
+        return 70
+    if place == 4:
+        return 55
+    if place == 5:
+        return 45
+    if place == 6:
+        return 30
+    if place <= 9:
+        return 20
+    if place <= 12:
+        return 10
+    if place <= 15:
+        return 5
+    return 0
+
+
+def kill_value_at_placement(placement: int) -> int:
+    place = max(1, min(20, placement))
+    if place == 1:
+        return 26
+    if place == 2:
+        return 22
+    if place == 3:
+        return 18
+    if place <= 5:
+        return 16
+    if place <= 10:
+        return 12
+    return 10
+
+
+def calc_elimination_rp(placement: int, kills: int, assists: int) -> int:
+    kv = kill_value_at_placement(placement)
+    total = max(0, kills) + max(0, assists)
+    full = min(total, KILLPO_SOFT_CAP_ELIMS)
+    half = max(0, total - KILLPO_SOFT_CAP_ELIMS)
+    return full * kv + half * (kv // 2)
+
+
+def calc_participation_rp(placement: int, participations: int) -> int:
+    kv = kill_value_at_placement(placement)
+    return max(0, participations) * (kv // 2)
+
+
+def calc_match_rp(
+    rank_name: str,
+    placement: int,
+    kills: int,
+    assists: int = 0,
+    participations: int = 0,
+) -> dict[str, Any]:
+    entry = RANK_ENTRY_COST.get(rank_name, 0)
+    place_rp = placement_rp(placement)
+    elim_rp = calc_elimination_rp(placement, kills, assists)
+    part_rp = calc_participation_rp(placement, participations)
+    combat_rp = elim_rp + part_rp
+    gross = place_rp + combat_rp
+    net = gross - entry
+    kv = kill_value_at_placement(placement)
+    return {
+        "rank": rank_name,
+        "rank_label": RANK_LABEL_JA.get(rank_name, rank_name),
+        "placement": placement,
+        "kills": max(0, kills),
+        "assists": max(0, assists),
+        "participations": max(0, participations),
+        "kill_value": kv,
+        "placement_rp": place_rp,
+        "elimination_rp": elim_rp,
+        "participation_rp": part_rp,
+        "combat_rp": combat_rp,
+        "entry_cost": entry,
+        "gross_rp": gross,
+        "net_rp": net,
+    }
+
+
+def build_killpo_embed(result: dict[str, Any]) -> discord.Embed:
+    sign = "+" if result["net_rp"] >= 0 else ""
+    embed = discord.Embed(
+        title="🎯 ランクマッチ RP 計算",
+        color=0x2ECC71 if result["net_rp"] >= 0 else 0xE74C3C,
+    )
+    embed.add_field(
+        name="入力",
+        value=(
+            f"ランク: **{result['rank_label']}**\n"
+            f"順位: **{result['placement']}位**\n"
+            f"キル **{result['kills']}** / アシスト **{result['assists']}** / 参加 **{result['participations']}**"
+        ),
+        inline=False,
+    )
+    embed.add_field(name="順位RP", value=f"+{result['placement_rp']}", inline=True)
+    embed.add_field(
+        name="戦闘RP",
+        value=f"+{result['combat_rp']}\n（キルポ {result['elimination_rp']} + 参加 {result['participation_rp']}）",
+        inline=True,
+    )
+    embed.add_field(name="エントリー", value=f"−{result['entry_cost']}", inline=True)
+    embed.add_field(
+        name="1キル/参加の基準値",
+        value=f"キル値 **{result['kill_value']}** / 参加値 **{result['kill_value'] // 2}**（{result['placement']}位着地）",
+        inline=False,
+    )
+    embed.add_field(name="獲得RP（エントリー前）", value=f"+{result['gross_rp']}", inline=True)
+    embed.add_field(name="**純増RP（NET）**", value=f"**{sign}{result['net_rp']}**", inline=True)
+    embed.set_footer(
+        text="キル+アシスト6までフル値・7以降半減 / 参加はキル値の50% / チャレンジャー・連続トップ5ボーナスは未計算"
+    )
+    return embed
+
+
 def extract_total_kills_damage(data: dict[str, Any]) -> tuple[int | None, int | None]:
     total = data.get("total") or {}
     kills = total.get("kills")

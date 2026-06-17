@@ -160,6 +160,7 @@ async def help_command(interaction: discord.Interaction, ephemeral: bool = False
             "• `/apex_stats` … ロスター登録済みの **今の戦績**（省略時は自分）\n"
             "• `/apex_rp` … 名前と PF を毎回指定して戦績（未登録でも可）\n"
             "• `/apex_clan_rank` … ロスター全員の **RP か累計キル** ランキング（時間がかかります）\n"
+            "• `/apex_killpo` … **キル数・参加・アシスト・順位・ランク** からランクマッチの獲得RPを計算\n"
             "• `/apex_sync_roles` … **今の BR ランク**に合わせてランクロールを付け替え（省略時は自分）\n"
             "• `/apex_sync_all_roles` … ロスター全員を一括同期（**管理者**・所要時間大）\n"
             f"• `/apex_roster_reload` … `#{ch}` を強制再読込（**管理者**）\n\n"
@@ -285,6 +286,42 @@ async def apex_clan_rank(interaction: discord.Interaction, metric: app_commands.
     )
     embed.set_footer(text="Data provided by Apex Legends Status")
     await interaction.followup.send(embed=embed)
+
+@bot.tree.command(name="apex_killpo", description="ランクマッチの獲得RPを計算（キル・アシスト・参加・順位・ランク）")
+@app_commands.describe(
+    placement="マッチ順位（1〜20）",
+    kills="キル数",
+    rank="現在のランク帯（エントリー費用に使用）",
+    assists="アシスト数",
+    participations="参加数（味方キルへの無関与参加など）",
+)
+@app_commands.choices(rank=[
+    app_commands.Choice(name="ルーキー", value="Rookie"),
+    app_commands.Choice(name="ブロンズ", value="Bronze"),
+    app_commands.Choice(name="シルバー", value="Silver"),
+    app_commands.Choice(name="ゴールド", value="Gold"),
+    app_commands.Choice(name="プラチナ", value="Platinum"),
+    app_commands.Choice(name="ダイヤモンド", value="Diamond"),
+    app_commands.Choice(name="マスター", value="Master"),
+    app_commands.Choice(name="プレデター", value="Apex Predator"),
+])
+async def apex_killpo(
+    interaction: discord.Interaction,
+    placement: app_commands.Range[int, 1, 20],
+    kills: app_commands.Range[int, 0, 30],
+    rank: app_commands.Choice[str],
+    assists: app_commands.Range[int, 0, 30] = 0,
+    participations: app_commands.Range[int, 0, 30] = 0,
+):
+    result = apex.calc_match_rp(
+        rank.value,
+        placement,
+        kills,
+        assists=assists,
+        participations=participations,
+    )
+    embed = apex.build_killpo_embed(result)
+    await interaction.response.send_message(embed=embed)
 
 @bot.tree.command(name="apex_sync_roles", description="APIのBRランクに合わせてランクロールを付け替え（`#apexid` 登録者）")
 @app_commands.describe(target="省略時は自分。他人を指定する場合はロール管理権限が必要です")
