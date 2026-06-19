@@ -69,7 +69,43 @@ def extract_uid(value: str) -> str | None:
     return text if re.fullmatch(r"\d{8,}", text) else None
 
 
-async def fetch_apex_bridge(player: str, platform: str, api_key: str) -> tuple[dict | None, str | None]:
+async def _fetch_apex_bridge_with_session(
+    session: aiohttp.ClientSession,
+    params: dict[str, str],
+    headers: dict[str, str],
+) -> tuple[dict | None, str | None]:
+    async with session.get(APEX_BRIDGE_URL, params=params, headers=headers) as resp:
+        try:
+            data = await resp.json(content_type=None)
+        except Exception:
+            return None, f"APIの応答を解析できませんでした (HTTP {resp.status})。"
+
+        if not isinstance(data, dict):
+            return None, "想定外のAPI応答です。"
+
+        err = data.get("Error") or data.get("error")
+        if err:
+            return None, str(err)
+
+        if resp.status == 404:
+            return None, "プレイヤーが見つかりません。PCの場合は **EAアカウント名** を確認してください。"
+        if resp.status == 403:
+            return None, "APIキーが無効です。`APEX_LEGENDS_API_KEY` を確認してください。"
+        if resp.status == 429:
+            return None, "APIのレート制限です。しばらく待ってから再度お試しください。"
+        if resp.status >= 400:
+            return None, f"APIエラー (HTTP {resp.status})。"
+
+        return data, None
+
+
+async def fetch_apex_bridge(
+    player: str,
+    platform: str,
+    api_key: str,
+    *,
+    session: aiohttp.ClientSession | None = None,
+) -> tuple[dict | None, str | None]:
     player = player.strip()
     uid = extract_uid(player)
     if uid:
@@ -77,31 +113,13 @@ async def fetch_apex_bridge(player: str, platform: str, api_key: str) -> tuple[d
     else:
         params = {"player": player, "platform": platform, "version": "5"}
     headers = {"Authorization": api_key}
+
+    if session is not None:
+        return await _fetch_apex_bridge_with_session(session, params, headers)
+
     timeout = aiohttp.ClientTimeout(total=20)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.get(APEX_BRIDGE_URL, params=params, headers=headers) as resp:
-            try:
-                data = await resp.json(content_type=None)
-            except Exception:
-                return None, f"APIの応答を解析できませんでした (HTTP {resp.status})。"
-
-            if not isinstance(data, dict):
-                return None, "想定外のAPI応答です。"
-
-            err = data.get("Error") or data.get("error")
-            if err:
-                return None, str(err)
-
-            if resp.status == 404:
-                return None, "プレイヤーが見つかりません。PCの場合は **EAアカウント名** を確認してください。"
-            if resp.status == 403:
-                return None, "APIキーが無効です。`APEX_LEGENDS_API_KEY` を確認してください。"
-            if resp.status == 429:
-                return None, "APIのレート制限です。しばらく待ってから再度お試しください。"
-            if resp.status >= 400:
-                return None, f"APIエラー (HTTP {resp.status})。"
-
-            return data, None
+    async with aiohttp.ClientSession(timeout=timeout) as new_session:
+        return await _fetch_apex_bridge_with_session(new_session, params, headers)
 
 
 async def _get_json(session: aiohttp.ClientSession, path: str, api_key: str) -> dict[str, Any] | None:
@@ -280,6 +298,28 @@ def br_rank_name_from_bridge(data: dict[str, Any]) -> str | None:
     rank = glob.get("rank") or {}
     name = rank.get("rankName")
     return str(name) if name else None
+
+
+def format_rank_label(rank_name: str | None, rank_div: Any) -> str:
+    rk = rank_name or "?"
+    if rank_div in (None, "", 0):
+        return rk
+    try:
+        div = int(float(rank_div))
+        if div == 0:
+            return rk
+        return f"{rk} {div}"
+    except (TypeError, ValueError):
+        return f"{rk} {rank_div}"
+
+
+def shorten_api_error(msg: str | None, limit: int = 80) -> str:
+    if not msg:
+        return "?"
+    text = str(msg).replace("\n", " ").strip()
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1] + "…"
 
 
 # Ranked match RP / キルポ計算（公式仕様に準拠した近似）
@@ -613,47 +653,52 @@ async def build_clan_rank_rows(
         return [], f"`#{ROSTER_CHANNEL_NAME}` に有効な行がありません（例: `123456789012345678|PC|YourEAName` / `123456789012345678|PC|uid:100...`）。"
 
     rows: list[dict[str, Any]] = []
-    for e in entries:
-        data, err = await fetch_apex_bridge(e["apex_name"], e["platform"], api_key)
-        did = int(e["discord_id"])
-        member = guild.get_member(did)
-        mention = member.mention if member else f"<@{did}>"
-        display = member.display_name if member else str(did)
-        if err or not data:
-            rows.append(
-                {
-                    "discord_id": did,
-                    "mention": mention,
-                    "display": display,
-                    "error": err or "?",
-                    "rp": None,
-                    "kills": None,
-                    "rank_name": None,
-                    "rank_div": None,
-                }
+    timeout = aiohttp.ClientTimeout(total=20)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        for i, e in enumerate(entries):
+            data, err = await fetch_apex_bridge(
+                e["apex_name"], e["platform"], api_key, session=session
             )
-        else:
-            glob = data.get("global") or {}
-            rank = glob.get("rank") or {}
-            rs = rank.get("rankScore")
-            try:
-                rp = int(float(rs)) if rs is not None else None
-            except (TypeError, ValueError):
-                rp = None
-            kills, _ = extract_total_kills_damage(data)
-            rows.append(
-                {
-                    "discord_id": did,
-                    "mention": mention,
-                    "display": display,
-                    "error": None,
-                    "rp": rp,
-                    "kills": kills,
-                    "rank_name": br_rank_name_from_bridge(data),
-                    "rank_div": rank.get("rankDiv"),
-                }
-            )
-        await asyncio.sleep(2.2)
+            did = int(e["discord_id"])
+            member = guild.get_member(did)
+            mention = member.mention if member else f"<@{did}>"
+            display = member.display_name if member else str(did)
+            if err or not data:
+                rows.append(
+                    {
+                        "discord_id": did,
+                        "mention": mention,
+                        "display": display,
+                        "error": shorten_api_error(err),
+                        "rp": None,
+                        "kills": None,
+                        "rank_name": None,
+                        "rank_div": None,
+                    }
+                )
+            else:
+                glob = data.get("global") or {}
+                rank = glob.get("rank") or {}
+                rs = rank.get("rankScore")
+                try:
+                    rp = int(float(rs)) if rs is not None else None
+                except (TypeError, ValueError):
+                    rp = None
+                kills, _ = extract_total_kills_damage(data)
+                rows.append(
+                    {
+                        "discord_id": did,
+                        "mention": mention,
+                        "display": display,
+                        "error": None,
+                        "rp": rp,
+                        "kills": kills,
+                        "rank_name": br_rank_name_from_bridge(data),
+                        "rank_div": rank.get("rankDiv"),
+                    }
+                )
+            if i + 1 < len(entries):
+                await asyncio.sleep(2.2)
 
     def sort_key(r: dict[str, Any]):
         if metric == "kills":

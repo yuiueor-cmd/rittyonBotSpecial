@@ -8,6 +8,7 @@ from flask import Flask
 from threading import Thread
 import re
 import asyncio
+import traceback
 from typing import Optional
 
 import apex_helpers as apex
@@ -247,45 +248,58 @@ async def apex_clan_rank(interaction: discord.Interaction, metric: app_commands.
         await interaction.response.send_message("サーバー内でのみ使えます。", ephemeral=True)
         return
 
-    await interaction.response.defer(thinking=True)
-    rows, err = await apex.build_clan_rank_rows(interaction.guild, api_key, metric.value)
-    if err:
-        await interaction.followup.send(f"❌ {err}", ephemeral=True)
-        return
+    try:
+        await interaction.response.defer(thinking=True)
+        rows, err = await apex.build_clan_rank_rows(interaction.guild, api_key, metric.value)
+        if err:
+            await interaction.followup.send(f"❌ {err}", ephemeral=True)
+            return
 
-    lines = []
-    medals = ["🥇", "🥈", "🥉"]
-    for i, r in enumerate(rows[:20]):
-        med = medals[i] if i < 3 else f"{i + 1}."
-        if r.get("error"):
-            lines.append(f"{med} {r['mention']} — ⚠️ {r['error']}")
-        elif metric.value == "kills":
-            kv = r.get("kills")
-            rk = r.get("rank_name") or "?"
-            rd = r.get("rank_div")
-            rank_label = f"{rk} {rd}" if rd not in (None, "", 0) else rk
-            if kv is not None:
-                lines.append(f"{med} {r['mention']} **キル {kv:,}** （{rank_label}）")
+        lines = []
+        medals = ["🥇", "🥈", "🥉"]
+        for i, r in enumerate(rows[:20]):
+            med = medals[i] if i < 3 else f"{i + 1}."
+            rank_label = apex.format_rank_label(r.get("rank_name"), r.get("rank_div"))
+            if r.get("error"):
+                lines.append(f"{med} {r['mention']} — ⚠️ {r['error']}")
+            elif metric.value == "kills":
+                kv = r.get("kills")
+                if kv is not None:
+                    lines.append(f"{med} {r['mention']} **キル {kv:,}** （{rank_label}）")
+                else:
+                    lines.append(f"{med} {r['mention']} キル — （{rank_label}）")
             else:
-                lines.append(f"{med} {r['mention']} キル — （{rank_label}）")
-        else:
-            rv = r.get("rp")
-            rk = r.get("rank_name") or "?"
-            rd = r.get("rank_div")
-            rank_label = f"{rk} {rd}" if rd not in (None, "", 0) else rk
-            if rv is not None:
-                lines.append(f"{med} {r['mention']} **RP {rv:,}** （{rank_label}）")
-            else:
-                lines.append(f"{med} {r['mention']} RP — （{rank_label}）")
+                rv = r.get("rp")
+                if rv is not None:
+                    lines.append(f"{med} {r['mention']} **RP {rv:,}** （{rank_label}）")
+                else:
+                    lines.append(f"{med} {r['mention']} RP — （{rank_label}）")
 
-    body = "\n".join(lines) if lines else "（データなし）"
-    embed = discord.Embed(
-        title=f"クランランキング（{'RP' if metric.value == 'rp' else '累計キル'}）",
-        description=body[:4000],
-        color=0xDA292A,
-    )
-    embed.set_footer(text="Data provided by Apex Legends Status")
-    await interaction.followup.send(embed=embed)
+        body = "\n".join(lines) if lines else "（データなし）"
+        embed = discord.Embed(
+            title=f"クランランキング（{'RP' if metric.value == 'rp' else '累計キル'}）",
+            description=body[:4096],
+            color=0xDA292A,
+        )
+        embed.set_footer(text="Data provided by Apex Legends Status")
+        await interaction.followup.send(embed=embed)
+    except discord.NotFound:
+        print("[apex_clan_rank] interaction expired before response")
+    except Exception as e:
+        print(f"[apex_clan_rank] error:\n{traceback.format_exc()}")
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(
+                    f"❌ ランキング取得中にエラーが発生しました: {e}",
+                    ephemeral=True,
+                )
+            else:
+                await interaction.response.send_message(
+                    f"❌ ランキング取得中にエラーが発生しました: {e}",
+                    ephemeral=True,
+                )
+        except discord.HTTPException:
+            pass
 
 @bot.tree.command(name="apex_killpo", description="ランクマッチの獲得RPを計算（キル・アシスト・参加・順位・ランク）")
 @app_commands.describe(
