@@ -489,15 +489,9 @@ async def on_member_join(member):
     await channel.send(
         f"""{member.mention} さん、参加ありがとうございます！🎉
 
-以下の項目を教えてください：
+まず確認させてください。
 
-・年齢  
-・プラットフォーム  
-・最高ランク帯（シーズンまで記載ください）  
-・現在のランク帯  
-・参加率  
-
-まずはこちら教えてください！"""
+**年齢が25歳以上ですか？**（はい / いいえ）"""
     )
 
     general_channel = discord.utils.get(guild.text_channels, name="一般")
@@ -526,8 +520,33 @@ async def on_message(message: discord.Message):
         step = session["step"]
 
         if step == 1:
+            text = message.content.strip().lower()
+            if any(k in text for k in ["はい", "ok", "yes"]):
+                session["answers"]["age_25plus"] = "はい"
+                session["step"] = 2
+                await message.channel.send(
+                    "ありがとうございます！\n\n"
+                    "次に、以下の項目を教えてください：\n\n"
+                    "・年齢\n"
+                    "・プラットフォーム\n"
+                    "・最高ランク帯（シーズンまで記載ください）\n"
+                    "・現在のランク帯\n"
+                    "・参加率"
+                )
+                return
+            elif any(k in text for k in ["いいえ", "no"]):
+                await message.channel.send(
+                    "当クランは **25歳以上** の募集となっております。"
+                )
+                del apply_sessions[user_id]
+                return
+            else:
+                await message.channel.send("「はい」または「いいえ」で回答してください。")
+                return
+
+        if step == 2:
             session["answers"]["basic"] = message.content
-            session["step"] = 2
+            session["step"] = 3
             await message.channel.send(
                 "ありがとうございます！\n"
                 "次に、ランクバッジのスクショを貼ってください。\n"
@@ -535,9 +554,9 @@ async def on_message(message: discord.Message):
             )
             return
 
-        if step == 2:
+        if step == 3:
             if message.content.lower() == "完了":
-                session["step"] = 3
+                session["step"] = 4
                 await message.channel.send(
                     "ありがとうございます！\n"
                     "次の質問です。\n\n"
@@ -555,10 +574,10 @@ async def on_message(message: discord.Message):
             await message.channel.send("画像を送るか、完了と入力してください。")
             return
 
-        if step == 3:
+        if step == 4:
             text = message.content.strip().lower()
             if any(k in text for k in ["はい", "ok", "大丈夫", "問題ない"]):
-                session["step"] = 4
+                session["step"] = 5
                 await message.channel.send(
                     "ありがとうございます！\n"
                     "次の質問です。\n\n"
@@ -573,10 +592,10 @@ async def on_message(message: discord.Message):
                 await message.channel.send("「はい」または「いいえ」で回答してください。")
                 return
 
-        if step == 4:
+        if step == 5:
             text = message.content.strip().lower()
             if any(k in text for k in ["いいえ", "no", "ない", "未経験"]):
-                session["step"] = 5
+                session["step"] = 6
                 await message.channel.send(
                     "ありがとうございます！\n"
                     "この後、説明会を実施します。\n"
@@ -584,7 +603,7 @@ async def on_message(message: discord.Message):
                 )
                 return
             elif any(k in text for k in ["はい", "ある", "経験あり", "ok"]):
-                session["step"] = 41
+                session["step"] = 51
                 await message.channel.send(
                     "どのシーズンでマスターを取りましたか？\n"
                     "数字で答えてください。（例：17）\n"
@@ -595,7 +614,7 @@ async def on_message(message: discord.Message):
                 await message.channel.send("「はい」または「いいえ」で回答してください。")
                 return
 
-        if step == 41:
+        if step == 51:
             seasons = extract_seasons(message.content)
 
             if not seasons:
@@ -608,7 +627,7 @@ async def on_message(message: discord.Message):
                 return
 
             session["answers"]["master_seasons"] = seasons
-            session["step"] = 5
+            session["step"] = 6
             await message.channel.send(
                 "ありがとうございます！\n"
                 "この後、説明会を実施します。\n"
@@ -616,7 +635,7 @@ async def on_message(message: discord.Message):
             )
             return
 
-        if step == 5:
+        if step == 6:
             session["answers"]["meeting"] = message.content
 
             admin_channel = discord.utils.get(message.guild.text_channels, name="管理者")
@@ -624,6 +643,8 @@ async def on_message(message: discord.Message):
                 await admin_channel.send(
                     f"【新規入隊希望者】\n"
                     f"ユーザー: {message.author.mention}\n\n"
+                    f"--- 25歳以上 ---\n"
+                    f"{session['answers'].get('age_25plus', '')}\n\n"
                     f"--- 基本情報 ---\n"
                     f"{session['answers'].get('basic', '')}\n\n"
                     f"--- ランクバッジ画像 ---\n"
