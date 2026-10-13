@@ -8,6 +8,7 @@ from flask import Flask
 from threading import Thread
 import re
 import asyncio
+import random
 import traceback
 from typing import Optional
 
@@ -246,6 +247,11 @@ async def apex_clan_rank(interaction: discord.Interaction, metric: app_commands.
         return
     if not interaction.guild:
         await interaction.response.send_message("サーバー内でのみ使えます。", ephemeral=True)
+        return
+
+    # 5% でネタ拒否（APIを叩く前に返す）
+    if random.random() < 0.05:
+        await interaction.response.send_message("気が乗らへんから今日は寝るわ")
         return
 
     try:
