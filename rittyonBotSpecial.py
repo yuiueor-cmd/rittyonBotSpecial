@@ -58,7 +58,35 @@ intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 target_channel_id = None
+daily_post_hour = 19
+daily_post_minute = 0
+last_daily_post_key = None
 welcome_enabled = True
+
+RANK_JOKE_CHANCE = 0.20
+RANK_JOKE_LINES = [
+    "気が乗らへんから今日は寝るわ",
+    "あ、ごめん今トイレ行ってるからまたあとで",
+    "ちょっと風呂入るわ、あとでな",
+    "今メシ食ってるからちょっと待って",
+    "今日は疲れたからランキング見る気せえへん",
+    "え、今？ ちょっとスマホ置いてたわ",
+    "APIさんに嫌われてそうやから今日はパスで",
+    "今カスタムやってるから後にして",
+    "ちょっとコンビニ行ってくるわ",
+    "ランキングより今は寝たいわ",
+]
+
+
+def parse_hhmm(value: str) -> tuple[int, int] | None:
+    digits = re.sub(r"\D", "", value.strip())
+    if len(digits) != 4:
+        return None
+    hour = int(digits[:2])
+    minute = int(digits[2:])
+    if hour > 23 or minute > 59:
+        return None
+    return hour, minute
 
 
 async def _maybe_apex_role_sync_on_join(member: discord.Member):
@@ -121,11 +149,28 @@ async def on_ready():
     except Exception as e:
         print(e)
 
-@bot.tree.command(name="setchannel", description="毎日19時に送信するチャンネルを設定します")
-async def setchannel(interaction: discord.Interaction, channel: discord.TextChannel):
-    global target_channel_id
+@bot.tree.command(name="setchannel", description="出欠案内を送るチャンネルと時刻を設定します（例: 1900 / 0900）")
+@app_commands.describe(
+    channel="送信先チャンネル",
+    time="時刻（4桁、JST）。19時なら 1900、9時なら 0900",
+)
+async def setchannel(interaction: discord.Interaction, channel: discord.TextChannel, time: str):
+    global target_channel_id, daily_post_hour, daily_post_minute, last_daily_post_key
+    parsed = parse_hhmm(time)
+    if parsed is None:
+        await interaction.response.send_message(
+            "時刻は **4桁** で入力してください。例: `1900`（19時）、`0900`（9時）、`2130`（21時30分）",
+            ephemeral=True,
+        )
+        return
+    hour, minute = parsed
     target_channel_id = channel.id
-    await interaction.response.send_message(f"送信先チャンネルを **{channel.mention}** に設定しました。")
+    daily_post_hour = hour
+    daily_post_minute = minute
+    last_daily_post_key = None
+    await interaction.response.send_message(
+        f"送信先を **{channel.mention}**、時刻を **{hour:02d}:{minute:02d}（JST）** に設定しました。"
+    )
 
 @bot.tree.command(name="welcome_on", description="参加者自動チャンネル作成を有効化します（管理者専用）")
 @app_commands.checks.has_permissions(administrator=True)
@@ -167,7 +212,7 @@ async def help_command(interaction: discord.Interaction, ephemeral: bool = False
             "• `/apex_sync_all_roles` … ロスター全員を一括同期（**管理者**・所要時間大）\n"
             f"• `/apex_roster_reload` … `#{ch}` を強制再読込（**管理者**）\n\n"
             "**クラン・集合**\n"
-            "• `/setchannel` … 毎日 **19時 JST** に出欠案内を送るチャンネルを設定\n"
+            "• `/setchannel` … 出欠案内のチャンネルと時刻を設定（例: `1900` / `0900`、JST）\n"
             "• `/welcome_on` / `/welcome_off` … 新規向けウェルカム自動作成（**管理者**）\n\n"
             "**自動で動くこと**\n"
             "• メンバー参加時: ロスターにいれば **ランクロール同期**（数秒後）\n"
@@ -249,9 +294,8 @@ async def apex_clan_rank(interaction: discord.Interaction, metric: app_commands.
         await interaction.response.send_message("サーバー内でのみ使えます。", ephemeral=True)
         return
 
-    # 5% でネタ拒否（APIを叩く前に返す）
-    if random.random() < 0.05:
-        await interaction.response.send_message("気が乗らへんから今日は寝るわ")
+    if random.random() < RANK_JOKE_CHANCE:
+        await interaction.response.send_message(random.choice(RANK_JOKE_LINES))
         return
 
     try:
@@ -439,23 +483,30 @@ async def apex_rp(interaction: discord.Interaction, ingame_name: str, platform: 
 
 @tasks.loop(minutes=1)
 async def send_daily_message():
-    global target_channel_id
+    global target_channel_id, last_daily_post_key
     if target_channel_id is None:
         return
 
     JST = pytz.timezone("Asia/Tokyo")
     now = datetime.datetime.now(JST)
-    if now.hour == 19 and now.minute == 0:
-        channel = bot.get_channel(target_channel_id)
-        if channel:
-            await channel.send(
-                "@everyone\n"
-                "20時👍\n"
-                "21時⭕\n"
-                "22時😎\n"
-                "観戦👀\n"
-                "参加不可❌"
-            )
+    if now.hour != daily_post_hour or now.minute != daily_post_minute:
+        return
+
+    post_key = now.strftime("%Y-%m-%d %H:%M")
+    if last_daily_post_key == post_key:
+        return
+    last_daily_post_key = post_key
+
+    channel = bot.get_channel(target_channel_id)
+    if channel:
+        await channel.send(
+            "@everyone\n"
+            "20時👍\n"
+            "21時⭕\n"
+            "22時😎\n"
+            "観戦👀\n"
+            "参加不可❌"
+        )
 
 @bot.event
 async def on_member_join(member):
